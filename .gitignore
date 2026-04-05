@@ -14,9 +14,8 @@ node_modules/
 .env.local
 .env.production
 
-# Data (large files — committed separately or via DVC)
-data/aec/*.zip
-data/aec/*.csv
+# Data (large files — not committed, re-download via README instructions)
+data/
 
 # Docker
 .dockerignore
