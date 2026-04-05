@@ -1,0 +1,16 @@
+{
+  "disabledMcpjsonServers": [
+    "gpd-conventions",
+    "gpd-errors",
+    "gpd-patterns",
+    "gpd-protocols",
+    "gpd-skills",
+    "gpd-state",
+    "gpd-verification",
+    "gpd-arxiv"
+  ],
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  }
+}
