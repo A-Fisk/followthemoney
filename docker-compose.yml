@@ -15,6 +15,9 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql://ftm:ftm@db:5432/followthemoney
     ports:

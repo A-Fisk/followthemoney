@@ -28,6 +28,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
+
 import psycopg2
 
 DATABASE_URL = os.environ.get(
