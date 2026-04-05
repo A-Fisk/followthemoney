@@ -68,7 +68,10 @@ Services:
 │   │   ├── database.py      # SQLAlchemy engine and session
 │   │   └── models.py        # ORM models for all 10 tables
 │   ├── scripts/
-│   │   └── ingest_aec.py    # AEC bulk CSV ingestion
+│   │   ├── ingest_aec.py       # AEC bulk CSV ingestion (Phase 1a)
+│   │   ├── enrich_abr.py       # ABR donor enrichment (Phase 1b)
+│   │   ├── ingest_register.py  # Register of Interests scraper (Phase 2)
+│   │   └── ingest_tvfy.py      # They Vote For You voting records (Phase 3)
 │   ├── pyproject.toml
 │   └── Dockerfile
 ├── frontend/
@@ -100,6 +103,30 @@ unzip -o election_data.zip -d election
 docker exec followthemoney-backend-1 uv run scripts/ingest_aec.py --data-dir /data/aec
 ```
 
+### They Vote For You (Phase 3)
+
+Requires a free API key — register at https://theyvoteforyou.org.au/help/data and add it to `.env`:
+
+```bash
+TVFY_API_KEY=your-key-here
+```
+
+Then run:
+
+```bash
+# Import all votes from the 47th Parliament onwards (default)
+docker exec followthemoney-backend-1 uv run scripts/ingest_tvfy.py
+
+# Or run locally with uv
+UV_CACHE_DIR=/tmp/uv-cache uv run scripts/ingest_tvfy.py
+
+# Dry run to preview without writing
+uv run scripts/ingest_tvfy.py --dry-run
+
+# Import from a specific date
+uv run scripts/ingest_tvfy.py --since 2019-07-01
+```
+
 ---
 
 ## Phases
@@ -107,9 +134,9 @@ docker exec followthemoney-backend-1 uv run scripts/ingest_aec.py --data-dir /da
 | Phase | Description | Status |
 |---|---|---|
 | 0 | Environment setup, schema, AEC data loaded | Done |
-| 1 | Data pipeline: donations + ABR/ASIC enrichment | Next |
-| 2 | Data pipeline: Register of Interests scraper | Planned |
-| 3 | Data pipeline: They Vote For You voting records | Planned |
+| 1 | Data pipeline: donations + ABR/ASIC enrichment | Done (ABR awaiting GUID) |
+| 2 | Data pipeline: Register of Interests scraper | Done |
+| 3 | Data pipeline: They Vote For You voting records | Done (awaiting API key) |
 | 4 | Frontend: party, politician, and donor profile pages | Planned |
 | 5 | Cross-reference view: donor industries vs voting records | Planned |
 | 6 | Public API + bulk data download | Planned |

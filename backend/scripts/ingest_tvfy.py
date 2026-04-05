@@ -1,0 +1,315 @@
+"""
+They Vote For You ingestion — imports voting records for all federal politicians.
+
+Fetches divisions (parliamentary votes) from the They Vote For You public API,
+stores them in the bills and votes tables, and auto-populates
+bill_industry_relevance based on policy tags.
+
+Requirements:
+    TVFY_API_KEY env var. Register free at https://theyvoteforyou.org.au/help/data
+
+Usage:
+    uv run scripts/ingest_tvfy.py
+
+Options:
+    --since DATE   Import votes on or after this date
+                   (default: 2022-05-21, start of 47th Parliament)
+    --dry-run      Print stats without writing to DB
+    --no-clear     Append to existing data instead of truncating
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import date, datetime
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
+
+import psycopg2
+
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://ftm:ftm@localhost:5432/followthemoney",
+)
+TVFY_API_KEY = os.environ.get("TVFY_API_KEY", "")
+TVFY_BASE = "https://theyvoteforyou.org.au/api/v1"
+
+# TVFY policy name keywords → relevant ANZSIC codes
+# A bill's policy tags are checked against these keywords (case-insensitive).
+# When matched, the bill is linked to those industries in bill_industry_relevance.
+POLICY_ANZSIC: dict[str, list[str]] = {
+    "coal":              ["0600"],
+    "mining":            ["0500", "0600", "0700", "0800", "0900"],
+    "petroleum":         ["0700"],
+    " gas":              ["0700"],  # space avoids matching "gas lighting" etc.
+    "climate":           ["0600", "0700"],
+    "gambling":          ["9201"],
+    "banking":           ["6210", "6220", "6230"],
+    "financial service": ["6210", "6220", "6230"],
+    "insurance":         ["6310", "6321", "6322"],
+    "superannuation":    ["6330"],
+    "pharmaceutical":    ["1841", "8401"],
+    "live animal":       ["0100", "0121"],
+    "agriculture":       ["0100", "0121", "0131"],
+    "media":             ["5610", "5620"],
+    "telecommunication": ["5801", "5802"],
+    "housing":           ["6711", "6712"],
+    "property":          ["6711", "6712", "6721"],
+    "construction":      ["3101", "3102", "3103"],
+    "alcohol":           ["1123", "5121"],
+    "tobacco":           ["1130"],
+}
+
+VALID_VOTE_DIRECTIONS = {"aye", "no", "abstain", "absent"}
+CHAMBER_MAP = {"representatives": "house", "senate": "senate"}
+
+
+# ── API helpers ────────────────────────────────────────────────────────────────
+
+_HEADERS = {"User-Agent": "FollowTheMoney/0.1 (civic transparency research; +https://github.com/followthemoney)"}
+
+
+def tvfy_get(path: str, **params) -> dict | list:
+    params["key"] = TVFY_API_KEY
+    url = f"{TVFY_BASE}/{path}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers=_HEADERS)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        print(f"  HTTP {e.code} for {path}", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"  Error fetching {path}: {e}", file=sys.stderr)
+        return []
+
+
+def fetch_divisions(since: date) -> list[dict]:
+    print("Fetching division lists from TVFY...")
+    result = []
+    for house in ("representatives", "senate"):
+        divs = tvfy_get("divisions.json", house=house)
+        if not isinstance(divs, list):
+            print(f"  Unexpected response for {house}", file=sys.stderr)
+            continue
+        for d in divs:
+            try:
+                div_date = datetime.strptime(d["date"], "%Y-%m-%d").date()
+            except (KeyError, ValueError):
+                continue
+            if div_date >= since:
+                result.append(d)
+    print(f"  {len(result)} divisions on or after {since}")
+    return result
+
+
+def fetch_division_detail(div_id: int) -> dict:
+    time.sleep(0.35)  # ~3 req/s — well within fair-use limits
+    detail = tvfy_get(f"divisions/{div_id}.json")
+    return detail if isinstance(detail, dict) else {}
+
+
+# ── DB helpers ─────────────────────────────────────────────────────────────────
+
+def upsert_party(cur, name: str) -> int:
+    cur.execute("SELECT id FROM parties WHERE name = %s", (name,))
+    row = cur.fetchone()
+    if row:
+        return row[0]
+    cur.execute(
+        "INSERT INTO parties (name) VALUES (%s) ON CONFLICT (name) DO NOTHING",
+        (name,),
+    )
+    cur.execute("SELECT id FROM parties WHERE name = %s", (name,))
+    return cur.fetchone()[0]
+
+
+def upsert_politician(cur, member: dict) -> int | None:
+    name = (member.get("name") or "").strip()
+    if not name:
+        return None
+    cur.execute("SELECT id FROM politicians WHERE name = %s", (name,))
+    row = cur.fetchone()
+    if row:
+        return row[0]
+    # Create from TVFY data — they have current parliament details
+    chamber = CHAMBER_MAP.get(member.get("house", ""))
+    electorate = member.get("electorate") or None
+    party_name = (member.get("party") or "").strip() or None
+    party_id = upsert_party(cur, party_name) if party_name else None
+    cur.execute(
+        """
+        INSERT INTO politicians (name, party_id, chamber, electorate, active)
+        VALUES (%s, %s, %s, %s, true)
+        ON CONFLICT (name) DO NOTHING
+        """,
+        (name, party_id, chamber, electorate),
+    )
+    cur.execute("SELECT id FROM politicians WHERE name = %s", (name,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+# ── Tagging helpers ────────────────────────────────────────────────────────────
+
+def extract_issue_tags(detail: dict) -> list[str]:
+    policy_votes = detail.get("policy_votes") or []
+    return [pv["policy"]["name"] for pv in policy_votes if pv.get("policy")]
+
+
+def tags_to_anzsic(tags: list[str]) -> list[str]:
+    codes: set[str] = set()
+    combined = " ".join(tags).lower()
+    for keyword, anzsic_list in POLICY_ANZSIC.items():
+        if keyword in combined:
+            codes.update(anzsic_list)
+    return sorted(codes)
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Ingest They Vote For You voting records")
+    parser.add_argument(
+        "--since",
+        default="2022-05-21",
+        help="Import votes on or after YYYY-MM-DD (default: 2022-05-21, start of 47th Parliament)",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Print stats without writing to DB")
+    parser.add_argument("--no-clear", action="store_true", help="Append instead of truncating")
+    args = parser.parse_args()
+
+    if not TVFY_API_KEY:
+        print("ERROR: TVFY_API_KEY not set.", file=sys.stderr)
+        print("Register for a free key at: https://theyvoteforyou.org.au/help/data", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        since = datetime.strptime(args.since, "%Y-%m-%d").date()
+    except ValueError:
+        print(f"ERROR: --since must be YYYY-MM-DD, got '{args.since}'", file=sys.stderr)
+        sys.exit(1)
+
+    divisions = fetch_divisions(since)
+    if not divisions:
+        print("No divisions found — nothing to import.")
+        return
+
+    if args.dry_run:
+        print(f"\nDRY RUN — would process {len(divisions)} divisions. No DB writes.")
+        return
+
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        if not args.no_clear:
+            with conn.cursor() as cur:
+                print("Clearing existing bills, votes, and bill_industry_relevance...")
+                cur.execute("TRUNCATE bill_industry_relevance")
+                cur.execute("TRUNCATE votes")
+                cur.execute("TRUNCATE bills RESTART IDENTITY")
+            conn.commit()
+
+        bills_count = 0
+        votes_count = 0
+        relevance_count = 0
+        unmatched: set[str] = set()
+
+        for i, div in enumerate(divisions, 1):
+            div_id = div["id"]
+            print(f"[{i}/{len(divisions)}] {div['date']}  #{div_id}  {div['name'][:55]}", end="  ", flush=True)
+
+            detail = fetch_division_detail(div_id)
+            if not detail:
+                print("SKIP (no detail)")
+                continue
+
+            tags = extract_issue_tags(detail)
+            anzsic_codes = tags_to_anzsic(tags)
+            member_votes = detail.get("votes") or []
+            div_date_str = detail.get("date", div.get("date"))
+            try:
+                div_date = datetime.strptime(div_date_str, "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                div_date = None
+
+            with conn:
+                with conn.cursor() as cur:
+                    # Upsert bill
+                    cur.execute(
+                        """
+                        INSERT INTO bills (title, issue_tags, summary, theyvoteforyou_id)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (theyvoteforyou_id) DO UPDATE SET
+                            title      = EXCLUDED.title,
+                            issue_tags = EXCLUDED.issue_tags,
+                            summary    = EXCLUDED.summary
+                        RETURNING id
+                        """,
+                        (
+                            detail.get("name") or div["name"],
+                            tags or None,
+                            (detail.get("motion") or "")[:2000] or None,
+                            str(div_id),
+                        ),
+                    )
+                    bill_db_id = cur.fetchone()[0]
+                    bills_count += 1
+
+                    # Link to industries
+                    tag_note = ", ".join(tags) if tags else ""
+                    for code in anzsic_codes:
+                        cur.execute(
+                            """
+                            INSERT INTO bill_industry_relevance (bill_id, anzsic_code, relevance_note)
+                            VALUES (%s, %s, %s)
+                            ON CONFLICT DO NOTHING
+                            """,
+                            (bill_db_id, code, f"TVFY policy: {tag_note}" if tag_note else None),
+                        )
+                        relevance_count += 1
+
+                    # Insert individual votes
+                    for mv in member_votes:
+                        vote_dir = (mv.get("vote") or "").lower()
+                        if vote_dir not in VALID_VOTE_DIRECTIONS:
+                            continue
+                        member = mv.get("member") or {}
+                        pol_id = upsert_politician(cur, member)
+                        if pol_id is None:
+                            unmatched.add(member.get("name", "?"))
+                            continue
+                        cur.execute(
+                            """
+                            INSERT INTO votes (politician_id, bill_id, vote_direction, vote_date)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (politician_id, bill_id) DO NOTHING
+                            """,
+                            (pol_id, bill_db_id, vote_dir, div_date),
+                        )
+                        votes_count += 1
+
+            print(f"tags={len(tags)} industry={len(anzsic_codes)} votes={len(member_votes)}")
+
+        print(f"\n{'='*60}")
+        print(f"Bills inserted/updated : {bills_count}")
+        print(f"Votes inserted         : {votes_count}")
+        print(f"Industry links created : {relevance_count}")
+        if unmatched:
+            print(f"Unmatched members      : {len(unmatched)}")
+            sample = sorted(unmatched)[:5]
+            print(f"  Sample: {', '.join(sample)}")
+
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()
