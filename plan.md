@@ -361,3 +361,63 @@ The site should have a permanent "What we can't show you" page that is honest ab
 - Framing should be reviewed by a media lawyer before public launch, particularly the cross-reference view
 - Defamation risk lives in framing, not facts — "received $X from Y, voted Z" is defensible; implying quid pro quo is not
 - The site should carry a clear methodology disclaimer on every profile page
+
+
+## Addendum: Journalist Briefing Card
+
+> **Context:** This feature was added after the core plan was written, following a clearer articulation of the primary use case. The site's highest-value function is as a real-time research tool for working journalists — enabling them to retrieve political donation context fast enough to use it within a news cycle. The CGT example: a journalist covering a Labor policy announcement should be able to search in 30 seconds and ask in their next press conference call: "You've received $X from property industry donors — how does that bear on your position?" This feature is the interface that makes that workflow possible.
+
+### What it is
+
+A "briefing card" — a single, scannable page per politician optimised for speed of reading rather than depth of research. Designed to be pulled up on a phone during a press conference or skimmed in two minutes before an interview.
+
+### URL structure
+
+```
+/brief/[politician-slug]
+/brief/[politician-slug]?topic=property
+/brief/[politician-slug]?topic=mining
+```
+
+The optional `?topic=` parameter filters all sections to show only donors and votes relevant to that industry or policy area — so a journalist covering a specific story gets only what's relevant without noise.
+
+### Page contents (in order)
+
+**1. Identity bar** — name, party, chamber, electorate, current role. One line.
+
+**2. Donor snapshot** — total donations received (direct + via party where attributable) in the last 3 financial years, broken down by industry in plain English. Not a chart — a short readable list:
+```
+Property & construction:  $142,000
+Financial services:        $89,000
+Mining & resources:        $45,000
+```
+
+**3. Declared interests** — gifts, travel, and hospitality from the Register of Interests, most recent first, with days-late flag where applicable. Maximum five entries shown, link to full list.
+
+**4. Votes on active topics** *(v2 — requires They Vote For You integration)* — if a `?topic=` is specified, show the politician's voting record on the three most recent and relevant bills, sourced and attributed to They Vote For You.
+
+**5. Quick copy** — a pre-formatted, citable one-liner the journalist can paste directly into notes or copy to a colleague:
+```
+According to AEC records [source link], [Name] or their party
+received $X from [industry] donors between [year] and [year].
+```
+
+**6. Full profile link** — one prominent link to the full politician profile page for deeper research.
+
+### Design constraints
+
+- **Must load in under 3 seconds** — if it's slower than that it won't be used in a live workflow
+- **Must be fully usable on mobile** — journalists pull this up on their phones
+- **No charts on this page** — charts take time to read; this page uses plain text and numbers only
+- **Shareable URL** — the full URL including any `?topic=` parameter should be shareable so a journalist can send it to an editor or colleague and they see exactly the same view
+- **Print/PDF friendly** — some journalists will want to print or screenshot this for notes
+
+### Implementation notes
+
+- This is a new frontend view on existing data — no new data pipeline work required
+- The `?topic=` filter maps to the existing ANZSIC industry tags already on donor records
+- The "quick copy" one-liner is generated server-side from the same data, not editable by users
+- Should be added in Phase 4 alongside the other frontend pages — it uses the same underlying API endpoints, just a different presentation layer
+- Mobile layout should be the primary design target, with desktop as
+  secondary
+
