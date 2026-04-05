@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.env
+*.egg-info/
+dist/
+.uv/
+
+# Node
+node_modules/
+.next/
+.env.local
+.env.production
+
+# Data (large files — committed separately or via DVC)
+data/aec/*.zip
+data/aec/*.csv
+
+# Docker
+.dockerignore
+
+# OS
+.DS_Store
+*.swp
+
+# IDE
+.vscode/
+.idea/
