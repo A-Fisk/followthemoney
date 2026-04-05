@@ -138,8 +138,14 @@ def extract_date(text: str) -> date | None:
 
 
 def parse_iso_date(s: str) -> date | None:
+    """Parse ISO-ish date strings including the API's '8/11/2025 2:00:00 PM' format."""
     if not s:
         return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ", "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(s.split("+")[0].strip(), fmt).date()
+        except ValueError:
+            continue
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
     except (ValueError, TypeError):
@@ -180,13 +186,18 @@ def ingest_senator(cur, senator: dict, client: httpx.Client) -> int:
     data = resp.json()
 
     politician_id = upsert_politician(cur, name, chamber="senate")
+    # Use statement-level lodgement date as proxy date_declared for base interests
+    # (the initial form has no per-item timestamps)
+    lodgement_date = parse_iso_date(
+        data.get("senatorInterestStatement", {}).get("lodgementDate")
+    )
     count = 0
 
     def process_section(section_key: str, detail_field: str):
         nonlocal count
         section = data.get(section_key, {})
 
-        # Base interests
+        # Base interests — declared no later than lodgement date
         for item in section.get("interests", []):
             desc = (item.get(detail_field) or "").strip()
             if not desc or desc.lower() == "not applicable":
@@ -198,6 +209,7 @@ def ingest_senator(cur, senator: dict, client: httpx.Client) -> int:
                 politician_id=politician_id,
                 donor_id=donor_id,
                 description=desc,
+                date_declared=lodgement_date,
                 source_url=source_url,
             )
             count += 1
