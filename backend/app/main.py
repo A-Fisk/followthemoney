@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .database import engine
 from . import models
+from .routers import politicians, parties, donors, search, unresolved
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -27,8 +28,8 @@ def health():
     return {"status": "ok"}
 
 
-# Routers will be added per phase
-# from .routers import donors, parties, politicians
-# app.include_router(donors.router, prefix="/api/v1")
-# app.include_router(parties.router, prefix="/api/v1")
-# app.include_router(politicians.router, prefix="/api/v1")
+app.include_router(politicians.router, prefix="/api/v1")
+app.include_router(parties.router,     prefix="/api/v1")
+app.include_router(donors.router,      prefix="/api/v1")
+app.include_router(search.router,      prefix="/api/v1")
+app.include_router(unresolved.router,  prefix="/api/v1")

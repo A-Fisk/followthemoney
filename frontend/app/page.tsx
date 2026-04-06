@@ -18,6 +18,15 @@ export default function Home() {
           </p>
         </a>
         <a
+          href="/search?q=Labor"
+          className="rounded border border-gray-200 p-5 hover:border-gray-400 transition"
+        >
+          <h2 className="font-semibold">Parties</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Donation totals, expenditure, top donors by party
+          </p>
+        </a>
+        <a
           href="/unresolved"
           className="rounded border border-gray-200 p-5 hover:border-gray-400 transition"
         >
