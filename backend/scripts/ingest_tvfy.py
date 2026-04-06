@@ -117,6 +117,34 @@ def fetch_division_detail(div_id: int) -> dict:
     return detail if isinstance(detail, dict) else {}
 
 
+def build_policy_map() -> dict[int, list[str]]:
+    """
+    Build a reverse map of division_id → [policy_name, ...] by fetching all
+    policies. TVFY tags live on the policy side, not the division side.
+    """
+    policies = tvfy_get("policies.json")
+    if not isinstance(policies, list):
+        print("  Could not fetch policies list", file=sys.stderr)
+        return {}
+    print(f"  Fetching {len(policies)} policy details to build tag map...")
+    div_to_policies: dict[int, list[str]] = {}
+    for i, policy in enumerate(policies, 1):
+        detail = tvfy_get(f"policies/{policy['id']}.json")
+        time.sleep(0.35)
+        if not isinstance(detail, dict):
+            continue
+        name = detail.get("name", policy.get("name", ""))
+        for pd in detail.get("policy_divisions", []):
+            div_id = pd.get("division", {}).get("id")
+            if div_id is not None:
+                div_to_policies.setdefault(div_id, []).append(name)
+        if i % 50 == 0:
+            print(f"  ... {i}/{len(policies)} policies fetched")
+    tagged = sum(1 for v in div_to_policies.values() if v)
+    print(f"  Policy map built: {len(div_to_policies)} divisions tagged across {len(policies)} policies")
+    return div_to_policies
+
+
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
 def upsert_party(cur, name: str) -> int:
@@ -132,8 +160,11 @@ def upsert_party(cur, name: str) -> int:
     return cur.fetchone()[0]
 
 
-def upsert_politician(cur, member: dict) -> int | None:
-    name = (member.get("name") or "").strip()
+def upsert_politician(cur, member: dict, div_house: str | None = None) -> int | None:
+    # TVFY vote member has first_name + last_name, not a single name field
+    first = (member.get("first_name") or "").strip()
+    last = (member.get("last_name") or "").strip()
+    name = f"{first} {last}".strip() if (first or last) else (member.get("name") or "").strip()
     if not name:
         return None
     cur.execute("SELECT id FROM politicians WHERE name = %s", (name,))
@@ -141,7 +172,8 @@ def upsert_politician(cur, member: dict) -> int | None:
     if row:
         return row[0]
     # Create from TVFY data — they have current parliament details
-    chamber = CHAMBER_MAP.get(member.get("house", ""))
+    # Chamber comes from the division (member dict doesn't include house)
+    chamber = CHAMBER_MAP.get(div_house or "")
     electorate = member.get("electorate") or None
     party_name = (member.get("party") or "").strip() or None
     party_id = upsert_party(cur, party_name) if party_name else None
@@ -160,9 +192,15 @@ def upsert_politician(cur, member: dict) -> int | None:
 
 # ── Tagging helpers ────────────────────────────────────────────────────────────
 
-def extract_issue_tags(detail: dict) -> list[str]:
-    policy_votes = detail.get("policy_votes") or []
-    return [pv["policy"]["name"] for pv in policy_votes if pv.get("policy")]
+def extract_issue_tags(detail: dict, policy_map: dict[int, list[str]] | None = None) -> list[str]:
+    # Primary: look up pre-built policy map (tags live on policy side in TVFY)
+    if policy_map is not None:
+        div_id = detail.get("id")
+        if div_id and div_id in policy_map:
+            return policy_map[div_id]
+    # Fallback: check policy_divisions on the division itself (populated for older/edited divisions)
+    policy_divisions = detail.get("policy_divisions") or []
+    return [pd["policy"]["name"] for pd in policy_divisions if pd.get("policy")]
 
 
 def tags_to_anzsic(tags: list[str]) -> list[str]:
@@ -203,8 +241,12 @@ def main():
         print("No divisions found — nothing to import.")
         return
 
+    print("Building policy tag map...")
+    policy_map = build_policy_map()
+
     if args.dry_run:
-        print(f"\nDRY RUN — would process {len(divisions)} divisions. No DB writes.")
+        tagged = sum(1 for d in divisions if d["id"] in policy_map)
+        print(f"\nDRY RUN — would process {len(divisions)} divisions ({tagged} with policy tags). No DB writes.")
         return
 
     conn = psycopg2.connect(DATABASE_URL)
@@ -212,9 +254,7 @@ def main():
         if not args.no_clear:
             with conn.cursor() as cur:
                 print("Clearing existing bills, votes, and bill_industry_relevance...")
-                cur.execute("TRUNCATE bill_industry_relevance")
-                cur.execute("TRUNCATE votes")
-                cur.execute("TRUNCATE bills RESTART IDENTITY")
+                cur.execute("TRUNCATE bills, votes, bill_industry_relevance RESTART IDENTITY")
             conn.commit()
 
         bills_count = 0
@@ -231,8 +271,9 @@ def main():
                 print("SKIP (no detail)")
                 continue
 
-            tags = extract_issue_tags(detail)
+            tags = extract_issue_tags(detail, policy_map)
             anzsic_codes = tags_to_anzsic(tags)
+            div_house = detail.get("house") or div.get("house")
             member_votes = detail.get("votes") or []
             div_date_str = detail.get("date", div.get("date"))
             try:
@@ -282,9 +323,11 @@ def main():
                         if vote_dir not in VALID_VOTE_DIRECTIONS:
                             continue
                         member = mv.get("member") or {}
-                        pol_id = upsert_politician(cur, member)
+                        pol_id = upsert_politician(cur, member, div_house)
                         if pol_id is None:
-                            unmatched.add(member.get("name", "?"))
+                            first = member.get("first_name", "")
+                            last = member.get("last_name", "")
+                            unmatched.add(f"{first} {last}".strip() or "?")
                             continue
                         cur.execute(
                             """

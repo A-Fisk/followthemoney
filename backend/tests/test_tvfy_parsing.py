@@ -11,34 +11,40 @@ from ingest_tvfy import extract_issue_tags, tags_to_anzsic
 
 
 class TestExtractIssueTags:
-    def test_extracts_policy_names(self):
+    def test_uses_policy_map_when_provided(self):
+        detail = {"id": 42}
+        policy_map = {42: ["Coal and mining", "Climate change"]}
+        tags = extract_issue_tags(detail, policy_map)
+        assert tags == ["Coal and mining", "Climate change"]
+
+    def test_policy_map_miss_falls_back_to_policy_divisions(self):
         detail = {
-            "policy_votes": [
-                {"policy": {"id": 1, "name": "Coal and mining"}, "vote": "aye3"},
-                {"policy": {"id": 2, "name": "Climate change"}, "vote": "aye3"},
+            "id": 99,
+            "policy_divisions": [
+                {"policy": {"id": 1, "name": "Gambling"}, "vote": "aye3"},
             ]
         }
-        tags = extract_issue_tags(detail)
-        assert "Coal and mining" in tags
-        assert "Climate change" in tags
+        tags = extract_issue_tags(detail, policy_map={})
+        assert tags == ["Gambling"]
 
-    def test_empty_policy_votes(self):
-        assert extract_issue_tags({"policy_votes": []}) == []
+    def test_no_map_no_policy_divisions(self):
+        assert extract_issue_tags({"id": 1, "policy_divisions": []}) == []
 
-    def test_missing_policy_votes_key(self):
+    def test_missing_keys_returns_empty(self):
         assert extract_issue_tags({}) == []
 
-    def test_null_policy_votes(self):
-        assert extract_issue_tags({"policy_votes": None}) == []
+    def test_null_policy_divisions(self):
+        assert extract_issue_tags({"id": 1, "policy_divisions": None}) == []
 
     def test_policy_entry_missing_policy_key_skipped(self):
         detail = {
-            "policy_votes": [
+            "id": 5,
+            "policy_divisions": [
                 {"policy": {"id": 1, "name": "Gambling"}, "vote": "aye3"},
                 {"vote": "no3"},  # no "policy" key
             ]
         }
-        tags = extract_issue_tags(detail)
+        tags = extract_issue_tags(detail, policy_map={})
         assert tags == ["Gambling"]
 
 
