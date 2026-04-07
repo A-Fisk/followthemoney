@@ -1,12 +1,30 @@
 import { notFound } from "next/navigation";
-import { fetchDonor } from "../../lib/api";
+import { fetchDonor, DonationByPartyRow } from "../../lib/api";
+
+type DonationSort = "amount" | "recipient" | "year";
+
+function sortDonations(donations: DonationByPartyRow[], sort: DonationSort): DonationByPartyRow[] {
+  return [...donations].sort((a, b) => {
+    if (sort === "amount") return b.amount - a.amount;
+    if (sort === "year")   return (b.financial_year ?? "").localeCompare(a.financial_year ?? "");
+    // recipient: party name or politician name
+    const nameA = a.party?.name ?? a.politician_name ?? "";
+    const nameB = b.party?.name ?? b.politician_name ?? "";
+    return nameA.localeCompare(nameB);
+  });
+}
 
 export default async function DonorPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ sort?: string }>;
 }) {
   const { id } = await params;
+  const { sort } = await searchParams;
+  const donationSort: DonationSort = sort === "recipient" || sort === "year" ? sort : "amount";
+
   const donor = await fetchDonor(id);
   if (!donor) notFound();
 
@@ -98,10 +116,24 @@ export default async function DonorPage({
       {donor.donations.length > 0 && (
         <section>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="font-semibold text-gray-900">
-              All donations{" "}
-              <span className="text-gray-400 font-normal text-sm">({donor.donations.length})</span>
-            </h2>
+            <div className="flex items-center gap-4">
+              <h2 className="font-semibold text-gray-900">
+                All donations{" "}
+                <span className="text-gray-400 font-normal text-sm">({donor.donations.length})</span>
+              </h2>
+              <span className="text-xs text-gray-400">
+                Sort:{" "}
+                {(["amount", "recipient", "year"] as DonationSort[]).map((s) => (
+                  <a
+                    key={s}
+                    href={`?sort=${s}`}
+                    className={`mr-2 ${donationSort === s ? "font-semibold text-gray-700" : "text-blue-600 hover:underline"}`}
+                  >
+                    {s}
+                  </a>
+                ))}
+              </span>
+            </div>
             <a
               href={`http://localhost:8000/api/v1/donors/${id}?format=csv`}
               className="text-xs text-blue-600 hover:underline"
@@ -121,7 +153,7 @@ export default async function DonorPage({
                 </tr>
               </thead>
               <tbody>
-                {donor.donations.map((d) => (
+                {sortDonations(donor.donations, donationSort).map((d) => (
                   <tr key={d.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="py-2 pr-4 tabular-nums">{d.financial_year}</td>
                     <td className="py-2 pr-4 text-right tabular-nums">
