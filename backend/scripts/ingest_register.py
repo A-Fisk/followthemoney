@@ -40,6 +40,7 @@ HOUSE_REGISTER_URL = f"{APH_BASE}/Senators_and_Members/Members/Register"
 SENATE_API_BASE = "https://pbs-apim-aqcdgxhvaug7f8em.z01.azurefd.net/api"
 
 PDF_CACHE_DIR = Path(__file__).parent.parent.parent / "data" / "register" / "pdfs"
+OCR_CACHE_DIR = Path(__file__).parent.parent.parent / "data" / "register" / "ocr_cache"
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -574,6 +575,125 @@ def parse_alteration_page(page) -> list[dict]:
     return results
 
 
+# ── Docling OCR fallback for image-based alteration pages ─────────────────────
+
+_OCR_ITEM_LABEL_RE = re.compile(
+    r"(1[12]\.\s*(?:Gifts?|Sponsored\s+travel[\w ]*|Travel[\w ]*))",
+    re.IGNORECASE,
+)
+_HANGING_LINE = re.compile(
+    r"(?:,|-|\b(?:of|the|from|a|an|and|or|in|at|to|by|for|new|\d+))$",
+    re.IGNORECASE,
+)
+
+
+def _ocr_pdf(pdf_path: Path) -> dict[int, str]:
+    """
+    Run docling OCR on a PDF and return {1-based page_no: text}.
+    Results are cached to OCR_CACHE_DIR/<stem>.json so subsequent
+    ingestion runs don't re-OCR the same file.
+    """
+    import json
+
+    OCR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = OCR_CACHE_DIR / f"{pdf_path.stem}.json"
+
+    if cache_file.exists():
+        return {int(k): v for k, v in json.loads(cache_file.read_text()).items()}
+
+    try:
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.document import TextItem
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+
+        opts = PdfPipelineOptions()
+        opts.do_ocr = True
+        opts.do_table_structure = False
+
+        converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
+        )
+        result = converter.convert(str(pdf_path))
+
+        page_texts: dict[int, list[str]] = {}
+        for item, _ in result.document.iterate_items():
+            if not isinstance(item, TextItem):
+                continue
+            for prov in item.prov or []:
+                page_texts.setdefault(prov.page_no, []).append(item.text)
+
+        out = {pg: "\n".join(lines) for pg, lines in page_texts.items()}
+        cache_file.write_text(json.dumps(out, ensure_ascii=False, indent=2))
+        return out
+
+    except Exception as e:
+        print(f"    WARN: docling OCR failed for {pdf_path.name}: {e}", file=sys.stderr)
+        return {}
+
+
+def parse_alteration_page_text(text: str, date_declared) -> list[dict]:
+    """
+    Parse a single alteration page whose text came from docling OCR.
+
+    Docling preserves item-type labels ("11. Gifts", "12. Sponsored travel…")
+    as text within the extracted content, so we split on those labels and
+    attribute the following lines to the correct category.
+
+    Returns list of dicts: {description, date_declared, item_type}
+    """
+    # Trim to ADDITION section only (stop at DELETION or Signed:)
+    m = re.search(r"\bADDITION\b", text)
+    if not m:
+        return []
+    content = text[m.end():]
+    # Chop off at DELETION section or signature block
+    content = re.split(r"\bDELETION\b", content, maxsplit=1)[0]
+    content = re.sub(r"Signed:.*$", "", content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r"\b(Details?|Item)\b\s*", "", content)
+
+    # Split on item-type labels; odd indices are labels, even are content blocks
+    parts = _OCR_ITEM_LABEL_RE.split(content)
+
+    results = []
+    current_type: str | None = None
+
+    for part in parts:
+        if _OCR_ITEM_LABEL_RE.fullmatch(part.strip()):
+            current_type = "11. Gifts" if part.strip().startswith("11") else "12. Travel Or Hospitality"
+            continue
+
+        if current_type is None or not part.strip():
+            continue
+
+        # Join continuation lines.
+        # A line is a continuation if the previous line ends with a comma,
+        # hyphen, or a hanging preposition/article/conjunction/number.
+        lines = [l.strip() for l in part.split("\n") if l.strip()]
+        pending: str | None = None
+        for line in lines:
+            if pending is None:
+                pending = line
+            elif _HANGING_LINE.search(pending) or line.startswith("("):
+                pending = pending + " " + line
+            else:
+                if not _NOT_APPLICABLE.search(pending):
+                    results.append({
+                        "description": pending,
+                        "date_declared": date_declared,
+                        "item_type": current_type,
+                    })
+                pending = line
+        if pending and not _NOT_APPLICABLE.search(pending):
+            results.append({
+                "description": pending,
+                "date_declared": date_declared,
+                "item_type": current_type,
+            })
+
+    return results
+
+
 def parse_house_pdf(pdf_path: Path) -> list[dict]:
     """
     Parse a House register PDF.
@@ -596,9 +716,43 @@ def parse_house_pdf(pdf_path: Path) -> list[dict]:
                         "interest_type": interest_type,
                     })
 
-            # Alteration notifications — word-position parsing, must be inside `with`
+            # Alteration notifications — word-position parsing for text pages,
+            # docling OCR fallback for image-only (scanned) pages.
+            image_page_nums: list[int] = []  # 1-based, matching docling convention
             for page in pdf.pages[7:]:
-                for alt in parse_alteration_page(page):
+                alts = parse_alteration_page(page)
+                if alts:
+                    for alt in alts:
+                        interest_type = (
+                            "gift" if "gift" in alt["item_type"].lower()
+                            else "travel_hospitality"
+                        )
+                        entries.append({
+                            "description": alt["description"],
+                            "date_received": extract_date(alt["description"]),
+                            "date_declared": alt["date_declared"],
+                            "interest_type": interest_type,
+                        })
+                elif not page.extract_words() and page.images:
+                    # Image-only page — queue for OCR
+                    image_page_nums.append(page.page_number)
+
+        # Run docling OCR on any image-only alteration pages
+        if image_page_nums:
+            print(f"      OCR: {len(image_page_nums)} image pages in {pdf_path.name} …",
+                  end=" ", flush=True)
+            ocr_pages = _ocr_pdf(pdf_path)
+            print("done")
+            for pg_num in image_page_nums:
+                page_text = ocr_pages.get(pg_num, "")
+                if not page_text:
+                    continue
+                # Extract submitted date from text
+                date_declared = None
+                dm = _SUBMITTED_DATE.search(page_text)
+                if dm:
+                    date_declared = extract_date(dm.group(1))
+                for alt in parse_alteration_page_text(page_text, date_declared):
                     interest_type = (
                         "gift" if "gift" in alt["item_type"].lower()
                         else "travel_hospitality"
