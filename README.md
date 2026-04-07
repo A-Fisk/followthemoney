@@ -168,15 +168,33 @@ The AEC data contains donors in multiple name formats ("Smith, John" / "John Smi
 # Auto-merge 3,400+ unambiguous duplicates
 uv run scripts/merge_donors.py
 
-# Export the ~1,300 ambiguous cases for LLM review
+# Export the ~1,300 ambiguous cases
 uv run scripts/merge_donors.py --dry-run --export-ambiguous ambiguous.json
+```
 
-# LLM reviews each case and writes decisions.json
+For the ambiguous cases there are three review options:
+
+**Option A — LLM only** (auto-approves high-confidence decisions, flags the rest):
+```bash
 uv run scripts/review_ambiguous.py ambiguous.json
-
-# Apply high-confidence decisions
 uv run scripts/merge_donors.py --apply-decisions decisions.json
 ```
+
+**Option B — LLM then interactive** (LLM runs first, then drops into manual review for anything it wasn't confident about):
+```bash
+uv run scripts/review_ambiguous.py ambiguous.json --interactive
+uv run scripts/merge_donors.py --apply-decisions decisions.json
+```
+
+**Option C — Manual only** (skip LLM, review everything yourself):
+```bash
+uv run scripts/review_ambiguous.py ambiguous.json --interactive
+# or, after a prior LLM run:
+uv run scripts/review_ambiguous.py decisions.json --interactive
+uv run scripts/merge_donors.py --apply-decisions decisions.json
+```
+
+Interactive review keys: `y` merge · `n` reject · `c` choose canonical · `s` skip · `q` quit and save. Progress is saved after every answer so you can quit and resume safely.
 
 Politician duplicates (e.g. stubs from PDF slugs vs full TVFY names):
 
