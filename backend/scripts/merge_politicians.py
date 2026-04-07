@@ -140,7 +140,17 @@ def main():
         for stub_id, stub_name, interests, votes, donations in stubs:
             total_data = interests + votes + donations
             if total_data == 0:
-                skipped_empty += 1
+                # No data attached — delete if a full-name record exists, otherwise skip
+                matches = find_match(conn.cursor(), stub_name, stub_id)
+                if matches:
+                    print(f"DELETE (empty stub) {stub_name!r}")
+                    if not args.dry_run:
+                        with conn.cursor() as cur:
+                            cur.execute("DELETE FROM politicians WHERE id = %s", (stub_id,))
+                        conn.commit()
+                    merged += 1
+                else:
+                    skipped_empty += 1
                 continue
 
             matches = find_match(conn.cursor(), stub_name, stub_id)
