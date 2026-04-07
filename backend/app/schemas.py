@@ -157,6 +157,7 @@ class PoliticianDetail(BaseModel):
     electorate: str | None = None
     active: bool = True
     party: PartyMin | None = None
+    party_top_donors: list[TopDonorRow] = []
     direct_donations: list[DonationRow] = []
     via_party_donations: list[PartyBranchDonation] = []
     as_donor_donations: list[AsDonorDonation] = []

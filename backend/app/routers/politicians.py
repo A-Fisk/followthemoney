@@ -70,6 +70,21 @@ def get_politician(id: int, format: str | None = None, db: Session = Depends(get
     if not pol:
         raise HTTPException(status_code=404, detail="Politician not found")
 
+    # Top 10 donors to the politician's party
+    party_top_donors_rows = db.execute(
+        text("""
+            SELECT dn.id, dn.name, dn.industry_label, dn.needs_review,
+                   SUM(d.amount) AS total
+            FROM donations d
+            JOIN donors dn ON dn.id = d.donor_id
+            WHERE d.recipient_party_id = :party_id
+            GROUP BY dn.id, dn.name, dn.industry_label, dn.needs_review
+            ORDER BY total DESC
+            LIMIT 10
+        """),
+        {"party_id": pol["party_id"]},
+    ).mappings().all() if pol["party_id"] else []
+
     # Direct donations received
     donations_rows = db.execute(
         text("""
@@ -224,9 +239,20 @@ def get_politician(id: int, format: str | None = None, db: Session = Depends(get
         for r in as_donor_rows
     ]
 
+    party_top_donors = [
+        schemas.TopDonorRow(
+            donor=schemas.DonorMin(id=r["id"], name=r["name"],
+                                   industry_label=r["industry_label"],
+                                   needs_review=r["needs_review"]),
+            total=float(r["total"]),
+        )
+        for r in party_top_donors_rows
+    ]
+
     return schemas.PoliticianDetail(
         id=pol["id"], name=pol["name"], chamber=pol["chamber"],
         electorate=pol["electorate"], active=pol["active"],
-        party=party, direct_donations=donations, via_party_donations=via_party,
+        party=party, party_top_donors=party_top_donors,
+        direct_donations=donations, via_party_donations=via_party,
         as_donor_donations=as_donor, interests=interests, votes=votes,
     )

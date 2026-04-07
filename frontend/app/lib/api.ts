@@ -97,6 +97,7 @@ export interface AsDonorDonation {
 }
 
 export interface PoliticianDetail extends PoliticianMin {
+  party_top_donors: TopDonorRow[];
   direct_donations: DonationRow[];
   via_party_donations: PartyBranchDonation[];
   as_donor_donations: AsDonorDonation[];

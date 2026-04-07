@@ -62,6 +62,52 @@ export default async function PoliticianPage({
         </div>
       </div>
 
+      {/* Party top donors */}
+      {pol.party && pol.party_top_donors.length > 0 && (
+        <section>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="font-semibold text-gray-900">
+              Top donors to{" "}
+              <a href={`/party/${pol.party.id}`} className="text-blue-600 hover:underline">
+                {pol.party.abbreviation || pol.party.name}
+              </a>{" "}
+              <span className="font-normal text-gray-400 text-sm">(top 10)</span>
+            </h2>
+            <a href={`/party/${pol.party.id}`} className="text-xs text-blue-600 hover:underline">
+              Full party profile →
+            </a>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
+                  <th className="py-2 pr-4">#</th>
+                  <th className="py-2 pr-4">Donor</th>
+                  <th className="py-2 pr-4">Industry</th>
+                  <th className="py-2 text-right">Total donated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pol.party_top_donors.map((d, i) => (
+                  <tr key={d.donor.id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-2 pr-4 text-gray-400 tabular-nums">{i + 1}</td>
+                    <td className="py-2 pr-4">
+                      <a href={`/donor/${d.donor.id}`} className="text-blue-600 hover:underline">
+                        {d.donor.name}
+                      </a>
+                    </td>
+                    <td className="py-2 pr-4 text-xs text-gray-500">{d.donor.industry_label || "—"}</td>
+                    <td className="py-2 text-right tabular-nums">
+                      ${d.total.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       {/* Register of Interests */}
       <section>
         <h2 className="mb-3 font-semibold text-gray-900">
