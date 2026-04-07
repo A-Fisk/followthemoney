@@ -73,6 +73,8 @@ export interface VoteRow {
   bill_title: string;
   issue_tags: string[] | null;
   theyvoteforyou_id: string | null;
+  tvfy_house: string | null;
+  tvfy_number: number | null;
 }
 
 export interface PoliticianDetail extends PoliticianMin {

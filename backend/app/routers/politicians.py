@@ -103,7 +103,8 @@ def get_politician(id: int, format: str | None = None, db: Session = Depends(get
     votes_rows = db.execute(
         text("""
             SELECT v.id, v.vote_direction, v.vote_date,
-                   b.id AS bill_id, b.title, b.issue_tags, b.theyvoteforyou_id
+                   b.id AS bill_id, b.title, b.issue_tags, b.theyvoteforyou_id,
+                   b.tvfy_house, b.tvfy_number
             FROM votes v
             JOIN bills b ON b.id = v.bill_id
             WHERE v.politician_id = :id
@@ -157,6 +158,7 @@ def get_politician(id: int, format: str | None = None, db: Session = Depends(get
             id=r["id"], vote_direction=r["vote_direction"], vote_date=r["vote_date"],
             bill_id=r["bill_id"], bill_title=r["title"],
             issue_tags=r["issue_tags"], theyvoteforyou_id=r["theyvoteforyou_id"],
+            tvfy_house=r["tvfy_house"], tvfy_number=r["tvfy_number"],
         )
         for r in votes_rows
     ]

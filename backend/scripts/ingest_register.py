@@ -286,16 +286,21 @@ def fetch_house_pdf_links(client: httpx.Client) -> list[dict]:
         if pdf_path in seen:
             continue
         seen.add(pdf_path)
-        # Extract name from filename: "Albanese_48P.pdf" → "Albanese"
+        # Extract name from filename stem as fallback
         filename = Path(pdf_path).stem  # e.g. "Albanese_48P" or "Andrew_Leigh_48P"
         name_part = filename.replace("_48P", "").replace("48P", "")
-        # Try to find the MP name in surrounding HTML
+        # The MP name is in a <td> immediately before the PDF link cell.
+        # Format: "LastName, Title FirstName, Member for Electorate, State"
+        # Take the LAST <td>text</td> before the PDF href to avoid picking up
+        # a cell from the previous row.
         start = max(0, m.start() - 300)
-        end = min(len(html), m.end() + 100)
-        surrounding = html[start:end]
-        # Look for name in <a> tag text near this href
-        name_match = re.search(r'>([A-Z][^<]{3,50}MP[^<]*)<', surrounding)
-        display_name = name_match.group(1).strip() if name_match else name_part
+        surrounding = html[start:m.end()]
+        td_matches = re.findall(r'<td>\s*([^<]+?)\s*</td>', surrounding)
+        display_name = td_matches[-1].strip() if td_matches else name_part
+
+        # Skip non-member entries (e.g. "Explanatory notes")
+        if "member for" not in display_name.lower():
+            continue
 
         entries.append({
             "pdf_url": f"{APH_BASE}{pdf_path}",
@@ -306,20 +311,49 @@ def fetch_house_pdf_links(client: httpx.Client) -> list[dict]:
     return entries
 
 
+_TITLE_RE = re.compile(
+    r"^(The\s+Hon\.?|Hon\.?|Dr\.?|Mr\.?|Mrs\.?|Ms\.?|Miss\.?|Prof\.?)\s+",
+    re.IGNORECASE,
+)
+
+
+def _strip_titles(s: str) -> str:
+    """Strip one or more leading honorific titles."""
+    prev = None
+    while prev != s:
+        prev = s
+        s = _TITLE_RE.sub("", s).strip()
+    return s
+
+
 def normalise_mp_name(display_name: str, filename_stem: str) -> str:
     """
-    Best-effort: extract clean name from display strings like
-    'Hon Anthony Albanese MP', 'Dr Monique Ryan MP', etc.
-    Falls back to the filename stem.
+    Extract clean "FirstName LastName" from APH register table cell text.
+
+    The cell format is: "LastName, Title FirstName, Member for Electorate, State"
+    (Some entries use "." instead of "," after the last name.)
+    Examples:
+      "Albanese, Hon Anthony, Member for Grayndler, NSW"       → "Anthony Albanese"
+      "Leigh, Hon Dr Andrew, Member for Fenner, ACT"           → "Andrew Leigh"
+      "O'Brien, Mr Ted, Member for Fairfax, QLD"               → "Ted O'Brien"
+      "France. Ms Ali, Member for Dickson, QLD"                → "Ali France"
+    Falls back to the filename stem if parsing fails.
     """
-    name = display_name
-    # Strip titles
-    name = re.sub(r"^(Hon|Dr|Mr|Mrs|Ms|Prof|Senator|The Hon\.?)\s+", "", name, flags=re.IGNORECASE)
-    # Strip trailing MP / party info
-    name = re.sub(r"\s+MP\s*$", "", name, flags=re.IGNORECASE)
+    # Normalise: treat "LastName. " the same as "LastName, "
+    normalised = re.sub(r"\.\s+", ", ", display_name, count=1)
+    parts = [p.strip() for p in normalised.split(",")]
+    if len(parts) >= 2:
+        last_name = parts[0]
+        given = _strip_titles(parts[1])
+        if given and last_name:
+            return f"{given} {last_name}"
+
+    # Fallback: plain string cleanup
+    name = display_name.strip()
+    name = _strip_titles(name)
+    name = re.sub(r",\s*Member\s+for.*$", "", name, flags=re.IGNORECASE)
     name = name.strip()
     if len(name) < 3:
-        # Fall back to filename stem, convert underscores to spaces
         name = filename_stem.replace("_", " ").title()
     return name
 
@@ -360,6 +394,11 @@ _ALTERATION_ITEM = re.compile(
 )
 
 
+def _split_chunk_lines(lines: list[str]) -> list[str]:
+    """Return each non-empty line as a separate item (base-section helper)."""
+    return [l.strip() for l in lines if l.strip()]
+
+
 def parse_base_section(text: str, section_num: int) -> list[str]:
     """
     Extract all non-'Not Applicable' entries from section 11 or 12 of the
@@ -380,79 +419,151 @@ def parse_base_section(text: str, section_num: int) -> list[str]:
     section_text = text[m.end(): end_match.start() if end_match else len(text)]
 
     entries = []
-    # Split on row labels; collect content after "Self" and "Spouse/Partner"
     lines = section_text.split("\n")
     in_entry = False
-    current = []
+    chunk_lines: list[str] = []
+
     for line in lines:
         line = line.rstrip()
         if re.match(r"^Self\s*$", line) or re.match(r"^Self\s+", line):
-            if current:
-                text_block = " ".join(current).strip()
-                if text_block and not _NOT_APPLICABLE.search(text_block):
-                    entries.append(text_block)
-            current = [re.sub(r"^Self\s*", "", line).strip()]
+            # Flush accumulated lines from previous Self block
+            for item in _split_chunk_lines(chunk_lines):
+                if not _NOT_APPLICABLE.search(item):
+                    entries.append(item)
+            first_content = re.sub(r"^Self\s*", "", line).strip()
+            chunk_lines = [first_content] if first_content else []
             in_entry = True
         elif re.match(r"^Spouse/", line) or re.match(r"^Dependent", line):
-            if current:
-                text_block = " ".join(current).strip()
-                if text_block and not _NOT_APPLICABLE.search(text_block):
-                    entries.append(text_block)
-            current = []
+            for item in _split_chunk_lines(chunk_lines):
+                if not _NOT_APPLICABLE.search(item):
+                    entries.append(item)
+            chunk_lines = []
             in_entry = False
         elif in_entry and line:
-            current.append(line)
+            chunk_lines.append(line)
 
-    if current:
-        text_block = " ".join(current).strip()
-        if text_block and not _NOT_APPLICABLE.search(text_block):
-            entries.append(text_block)
+    for item in _split_chunk_lines(chunk_lines):
+        if not _NOT_APPLICABLE.search(item):
+            entries.append(item)
 
     return entries
 
 
-def parse_alteration_page(text: str) -> list[dict]:
+def parse_alteration_page(page) -> list[dict]:
     """
-    Parse a single alteration notification page.
+    Parse a single alteration notification page using word-position analysis.
+
+    Items in the right column (x ≥ RIGHT_COL_X) are grouped into physical lines
+    by y-position, then split into individual interest items by y-gap > ITEM_GAP.
+    This correctly handles both old-format (Albanese-style) and new-format
+    (Wells-style) pages, including items that wrap across multiple PDF lines.
+
     Returns list of dicts: {description, date_declared, item_type}
     """
-    if not _ALTERATION_HEADER.search(text):
+    text = page.extract_text() or ""
+    if "ADDITION" not in text.upper():
+        return []
+    if not _ALTERATION_ITEM.search(text):
         return []
 
-    # Only care about ADDITION blocks with items 11 or 12
-    # Find "ADDITION" section
-    add_match = re.search(r"ADDITION", text)
-    del_match = re.search(r"DELETION", text)
-    if not add_match:
-        return []
-
-    add_end = del_match.start() if del_match and del_match.start() > add_match.start() else len(text)
-    addition_block = text[add_match.end(): add_end]
-
-    # Find submitted date
+    # Submitted date from text (reliable in both formats)
     date_declared = None
     dm = _SUBMITTED_DATE.search(text)
     if dm:
         date_declared = extract_date(dm.group(1))
 
-    results = []
-    # Look for item 11 or 12 entries
-    # The format is: "Item  Details\nSelf  <item type>  <description>"
-    # or within the Self row: "12. Travel Or Hospitality  <description text>"
-    item_matches = list(_ALTERATION_ITEM.finditer(addition_block))
-    if not item_matches:
+    words = page.extract_words()
+
+    # ── Locate ADDITION / DELETION section y-bounds ──────────────────────────
+    addition_y: float | None = None
+    deletion_y: float = float("inf")
+    for w in words:
+        t = w["text"].upper()
+        if t == "ADDITION" and addition_y is None:
+            addition_y = w["top"]
+        elif t == "DELETION" and addition_y is not None:
+            deletion_y = w["top"]
+            break
+
+    if addition_y is None:
         return []
 
-    for i, item_m in enumerate(item_matches):
-        item_type = item_m.group(0).strip()
-        # Description follows the item type on the same or next lines
-        start = item_m.end()
-        end = item_matches[i + 1].start() if i + 1 < len(item_matches) else len(addition_block)
-        desc_raw = addition_block[start:end].strip()
-        # Clean up multiline artefacts
-        desc = re.sub(r"\s+", " ", desc_raw).strip()
-        # Remove trailing "Spouse/ Partner Dependent Children" boilerplate
-        desc = re.sub(r"\s*(Spouse/\s*Partner|Dependent\s*Children).*$", "", desc, flags=re.DOTALL).strip()
+    # ── Determine right-column x boundary from "Details" header ──────────────
+    # The "Details" header word marks the start of the right (description) column.
+    # This varies by page format: ~159 for old-format, ~391 for new-format.
+    RIGHT_COL_X = 140.0  # fallback
+    for w in words:
+        if w["top"] > addition_y and w["text"] == "Details":
+            RIGHT_COL_X = w["x0"]
+            break
+
+    # ── Detect item type (11. Gifts / 12. Travel) from left-column label ─────
+    item_type: str | None = None
+    item_type_y: float | None = None
+
+    for w in words:
+        if w["top"] <= addition_y or w["top"] >= deletion_y:
+            continue
+        if w["x0"] < RIGHT_COL_X and re.match(r"1[12]\.", w["text"]):
+            num = w["text"].rstrip(".")
+            item_type = "11. Gifts" if num == "11" else "12. Travel Or Hospitality"
+            item_type_y = w["top"]
+            break  # use the FIRST item-type label found
+
+    if item_type is None or item_type_y is None:
+        return []
+
+    # ── Find upper bounds (Spouse/Partner or Signed: row) ────────────────────
+    stop_y: float = deletion_y
+    for w in words:
+        if w["top"] <= addition_y or w["top"] >= deletion_y:
+            continue
+        # "Spouse/" in left col, or "Signed:" anywhere — marks end of Self items
+        if (w["x0"] < RIGHT_COL_X and w["text"].startswith("Spouse")) or w["text"].startswith("Signed"):
+            stop_y = min(stop_y, w["top"])
+
+    # ── Collect right-column words in the Self section ────────────────────────
+    desc_words = [
+        w for w in words
+        if w["x0"] >= RIGHT_COL_X
+        and w["top"] >= item_type_y - 5  # small tolerance for row alignment
+        and w["top"] < stop_y
+    ]
+    if not desc_words:
+        return []
+
+    # ── Group words into text lines by y-position ─────────────────────────────
+    LINE_TOL = 2.0  # words within 2 units share a line
+    lines: list[tuple[float, list[str]]] = []
+    for w in sorted(desc_words, key=lambda x: (x["top"], x["x0"])):
+        if lines and abs(w["top"] - lines[-1][0]) <= LINE_TOL:
+            lines[-1][1].append(w["text"])
+        else:
+            lines.append((w["top"], [w["text"]]))
+
+    # ── Split lines into items by y-gap ───────────────────────────────────────
+    # Within-item line spacing ≈ 12 units; between-item gap ≥ 15 units.
+    ITEM_GAP = 13.0
+    items: list[list[str]] = []
+    current: list[str] = []
+    prev_y: float | None = None
+
+    for y, line_words in lines:
+        line_text = " ".join(line_words)
+        if prev_y is not None and (y - prev_y) > ITEM_GAP:
+            if current:
+                items.append(current)
+            current = [line_text]
+        else:
+            current.append(line_text)
+        prev_y = y
+
+    if current:
+        items.append(current)
+
+    results = []
+    for item_lines in items:
+        desc = " ".join(item_lines).strip()
         if desc and not _NOT_APPLICABLE.search(desc):
             results.append({
                 "description": desc,
@@ -474,34 +585,30 @@ def parse_house_pdf(pdf_path: Path) -> list[dict]:
     try:
         with pdfplumber.open(pdf_path) as pdf:
             full_text = "\n".join(p.extract_text() or "" for p in pdf.pages[:7])
-            alteration_pages = [
-                p.extract_text() or ""
-                for p in pdf.pages[7:]
-            ]
 
-        # Base sections (initial declaration)
-        for section_num, interest_type in [(11, "gift"), (12, "travel_hospitality")]:
-            for desc in parse_base_section(full_text, section_num):
-                entries.append({
-                    "description": desc,
-                    "date_received": extract_date(desc),
-                    "date_declared": None,
-                    "interest_type": interest_type,
-                })
+            # Base sections (initial declaration) — text-based, done while file is open
+            for section_num, interest_type in [(11, "gift"), (12, "travel_hospitality")]:
+                for desc in parse_base_section(full_text, section_num):
+                    entries.append({
+                        "description": desc,
+                        "date_received": extract_date(desc),
+                        "date_declared": None,
+                        "interest_type": interest_type,
+                    })
 
-        # Alteration notifications
-        for page_text in alteration_pages:
-            for alt in parse_alteration_page(page_text):
-                interest_type = (
-                    "gift" if "gift" in alt["item_type"].lower()
-                    else "travel_hospitality"
-                )
-                entries.append({
-                    "description": alt["description"],
-                    "date_received": extract_date(alt["description"]),
-                    "date_declared": alt["date_declared"],
-                    "interest_type": interest_type,
-                })
+            # Alteration notifications — word-position parsing, must be inside `with`
+            for page in pdf.pages[7:]:
+                for alt in parse_alteration_page(page):
+                    interest_type = (
+                        "gift" if "gift" in alt["item_type"].lower()
+                        else "travel_hospitality"
+                    )
+                    entries.append({
+                        "description": alt["description"],
+                        "date_received": extract_date(alt["description"]),
+                        "date_declared": alt["date_declared"],
+                        "interest_type": interest_type,
+                    })
 
     except Exception as e:
         print(f"    WARN: PDF parse error for {pdf_path.name}: {e}", file=sys.stderr)

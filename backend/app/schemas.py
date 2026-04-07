@@ -95,6 +95,8 @@ class VoteRow(BaseModel):
     bill_title: str
     issue_tags: list[str] | None = None
     theyvoteforyou_id: str | None = None
+    tvfy_house: str | None = None
+    tvfy_number: int | None = None
 
 
 # ── Aggregation rows ───────────────────────────────────────────────────────────

@@ -1,16 +1,46 @@
 import { notFound } from "next/navigation";
-import { fetchPolitician } from "../../lib/api";
+import { fetchPolitician, VoteRow } from "../../lib/api";
+
+function tvfyUrl(v: VoteRow): string | null {
+  if (v.tvfy_house && v.vote_date && v.tvfy_number != null) {
+    return `https://theyvoteforyou.org.au/divisions/${v.tvfy_house}/${v.vote_date}/${v.tvfy_number}`;
+  }
+  return null;
+}
+
+type VoteSort = "date" | "vote" | "issue";
+
+function sortVotes(votes: VoteRow[], sort: VoteSort): VoteRow[] {
+  return [...votes].sort((a, b) => {
+    if (sort === "date") {
+      return (b.vote_date ?? "").localeCompare(a.vote_date ?? "");
+    }
+    if (sort === "vote") {
+      return (a.vote_direction ?? "").localeCompare(b.vote_direction ?? "");
+    }
+    // issue: sort by first tag
+    const ta = a.issue_tags?.[0] ?? "zzz";
+    const tb = b.issue_tags?.[0] ?? "zzz";
+    return ta.localeCompare(tb);
+  });
+}
 
 export default async function PoliticianPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ sort?: string }>;
 }) {
   const { id } = await params;
+  const { sort } = await searchParams;
+  const voteSort: VoteSort = sort === "vote" || sort === "issue" ? sort : "date";
+
   const pol = await fetchPolitician(id);
   if (!pol) notFound();
 
   const chamberLabel = pol.chamber === "house" ? "House of Representatives" : pol.chamber === "senate" ? "Senate" : null;
+  const sortedVotes = sortVotes(pol.votes, voteSort);
 
   return (
     <div className="space-y-8">
@@ -154,10 +184,26 @@ export default async function PoliticianPage({
 
       {/* Voting record */}
       <section>
-        <h2 className="mb-3 font-semibold text-gray-900">
-          Voting record{" "}
-          <span className="font-normal text-gray-400 text-sm">({pol.votes.length})</span>
-        </h2>
+        <div className="mb-3 flex items-center gap-4">
+          <h2 className="font-semibold text-gray-900">
+            Voting record{" "}
+            <span className="font-normal text-gray-400 text-sm">({pol.votes.length})</span>
+          </h2>
+          {pol.votes.length > 0 && (
+            <span className="text-xs text-gray-400">
+              Sort:{" "}
+              {(["date", "vote", "issue"] as VoteSort[]).map((s) => (
+                <a
+                  key={s}
+                  href={`?sort=${s}`}
+                  className={`mr-2 ${voteSort === s ? "font-semibold text-gray-700" : "text-blue-600 hover:underline"}`}
+                >
+                  {s}
+                </a>
+              ))}
+            </span>
+          )}
+        </div>
         {pol.votes.length === 0 ? (
           <p className="text-sm text-gray-400">No voting record on file.</p>
         ) : (
@@ -172,37 +218,40 @@ export default async function PoliticianPage({
                 </tr>
               </thead>
               <tbody>
-                {pol.votes.map((v) => (
-                  <tr key={v.id} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="py-2 pr-4 tabular-nums text-xs">{v.vote_date || "—"}</td>
-                    <td className="py-2 pr-4">
-                      <span className={
-                        v.vote_direction === "aye"
-                          ? "text-green-700 font-medium"
-                          : v.vote_direction === "no"
-                          ? "text-red-600 font-medium"
-                          : "text-gray-500"
-                      }>
-                        {v.vote_direction}
-                      </span>
-                    </td>
-                    <td className="py-2 pr-4 max-w-sm text-xs leading-snug">
-                      {v.theyvoteforyou_id ? (
-                        <a
-                          href={`https://theyvoteforyou.org.au/divisions/${v.theyvoteforyou_id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-600 hover:underline"
-                        >
-                          {v.bill_title}
-                        </a>
-                      ) : v.bill_title}
-                    </td>
-                    <td className="py-2 text-xs text-gray-400">
-                      {v.issue_tags?.slice(0, 3).join(", ") || "—"}
-                    </td>
-                  </tr>
-                ))}
+                {sortedVotes.map((v) => {
+                  const link = tvfyUrl(v);
+                  return (
+                    <tr key={v.id} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="py-2 pr-4 tabular-nums text-xs">{v.vote_date || "—"}</td>
+                      <td className="py-2 pr-4">
+                        <span className={
+                          v.vote_direction === "aye"
+                            ? "text-green-700 font-medium"
+                            : v.vote_direction === "no"
+                            ? "text-red-600 font-medium"
+                            : "text-gray-500"
+                        }>
+                          {v.vote_direction}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-4 max-w-sm text-xs leading-snug">
+                        {link ? (
+                          <a
+                            href={link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:underline"
+                          >
+                            {v.bill_title}
+                          </a>
+                        ) : v.bill_title}
+                      </td>
+                      <td className="py-2 text-xs text-gray-400">
+                        {v.issue_tags?.slice(0, 3).join(", ") || "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

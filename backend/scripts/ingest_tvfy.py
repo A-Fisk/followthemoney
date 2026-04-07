@@ -284,14 +284,17 @@ def main():
             with conn:
                 with conn.cursor() as cur:
                     # Upsert bill
+                    tvfy_number = detail.get("number") or div.get("number")
                     cur.execute(
                         """
-                        INSERT INTO bills (title, issue_tags, summary, theyvoteforyou_id)
-                        VALUES (%s, %s, %s, %s)
+                        INSERT INTO bills (title, issue_tags, summary, theyvoteforyou_id, tvfy_house, tvfy_number)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         ON CONFLICT (theyvoteforyou_id) DO UPDATE SET
-                            title      = EXCLUDED.title,
-                            issue_tags = EXCLUDED.issue_tags,
-                            summary    = EXCLUDED.summary
+                            title       = EXCLUDED.title,
+                            issue_tags  = EXCLUDED.issue_tags,
+                            summary     = EXCLUDED.summary,
+                            tvfy_house  = EXCLUDED.tvfy_house,
+                            tvfy_number = EXCLUDED.tvfy_number
                         RETURNING id
                         """,
                         (
@@ -299,6 +302,8 @@ def main():
                             tags or None,
                             (detail.get("motion") or "")[:2000] or None,
                             str(div_id),
+                            div_house,
+                            tvfy_number,
                         ),
                     )
                     bill_db_id = cur.fetchone()[0]
