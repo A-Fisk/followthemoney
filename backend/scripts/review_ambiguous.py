@@ -111,12 +111,13 @@ def interactive_review(decisions: list[dict], output_path: Path) -> list[dict]:
     ]
     total_pending = len(pending)
 
+    KEYS = "  [y] merge  [n] reject  [c] choose canonical  [s] skip  [q] quit"
+
     if total_pending == 0:
         print("No pending cases — all decisions already resolved.")
         return decisions
 
-    print(f"\n{total_pending} cases need manual review.")
-    print("Keys: [y] merge  [n] skip/reject  [c] choose canonical  [s] skip later  [q] quit\n")
+    print(f"\n{total_pending} cases need manual review.\n")
 
     for step, (idx, d) in enumerate(pending, 1):
         name       = d["name"]
@@ -125,6 +126,7 @@ def interactive_review(decisions: list[dict], output_path: Path) -> list[dict]:
 
         # Header
         print(f"── [{step}/{total_pending}] ──────────────────────────────────────────")
+        print(KEYS)
         print(f"  Ambiguous : {name!r}")
         print(f"  Candidates: {candidates}")
         print(f"  Reason    : {reason}")
