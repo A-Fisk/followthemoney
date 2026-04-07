@@ -62,6 +62,61 @@ export default async function PoliticianPage({
         </div>
       </div>
 
+      {/* Register of Interests */}
+      <section>
+        <h2 className="mb-3 font-semibold text-gray-900">
+          Register of Interests — gifts & travel{" "}
+          <span className="font-normal text-gray-400 text-sm">({pol.interests.length})</span>
+        </h2>
+        {pol.interests.length === 0 ? (
+          <p className="text-sm text-gray-400">No declared interests on record.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
+                  <th className="py-2 pr-4">Description</th>
+                  <th className="py-2 pr-4">Provider</th>
+                  <th className="py-2 pr-4">Received</th>
+                  <th className="py-2 pr-4">Declared</th>
+                  <th className="py-2 pr-4">Days late</th>
+                  <th className="py-2">Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pol.interests.map((i) => (
+                  <tr key={i.id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-2 pr-4 max-w-xs text-xs leading-snug">{i.description || "—"}</td>
+                    <td className="py-2 pr-4 text-xs">
+                      {i.donor ? (
+                        <a href={`/donor/${i.donor.id}`} className="text-blue-600 hover:underline">
+                          {i.donor.name}
+                        </a>
+                      ) : "—"}
+                    </td>
+                    <td className="py-2 pr-4 text-xs tabular-nums">{i.date_received || "—"}</td>
+                    <td className="py-2 pr-4 text-xs tabular-nums">{i.date_declared || "—"}</td>
+                    <td className="py-2 pr-4 text-xs">
+                      {i.days_late != null ? (
+                        <span className={i.days_late > 0 ? "text-red-600 font-medium" : "text-gray-500"}>
+                          {i.days_late > 0 ? `+${i.days_late}` : i.days_late}
+                        </span>
+                      ) : "—"}
+                    </td>
+                    <td className="py-2">
+                      {i.source_url ? (
+                        <a href={i.source_url} target="_blank" rel="noopener noreferrer"
+                           className="text-xs text-blue-500 hover:underline">↗</a>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
       {/* Direct donations */}
       <section>
         <div className="mb-3 flex items-center justify-between">
@@ -226,61 +281,6 @@ export default async function PoliticianPage({
           </div>
         </section>
       )}
-
-      {/* Register of Interests */}
-      <section>
-        <h2 className="mb-3 font-semibold text-gray-900">
-          Register of Interests — gifts & travel{" "}
-          <span className="font-normal text-gray-400 text-sm">({pol.interests.length})</span>
-        </h2>
-        {pol.interests.length === 0 ? (
-          <p className="text-sm text-gray-400">No declared interests on record.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
-                  <th className="py-2 pr-4">Description</th>
-                  <th className="py-2 pr-4">Provider</th>
-                  <th className="py-2 pr-4">Received</th>
-                  <th className="py-2 pr-4">Declared</th>
-                  <th className="py-2 pr-4">Days late</th>
-                  <th className="py-2">Source</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pol.interests.map((i) => (
-                  <tr key={i.id} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="py-2 pr-4 max-w-xs text-xs leading-snug">{i.description || "—"}</td>
-                    <td className="py-2 pr-4 text-xs">
-                      {i.donor ? (
-                        <a href={`/donor/${i.donor.id}`} className="text-blue-600 hover:underline">
-                          {i.donor.name}
-                        </a>
-                      ) : "—"}
-                    </td>
-                    <td className="py-2 pr-4 text-xs tabular-nums">{i.date_received || "—"}</td>
-                    <td className="py-2 pr-4 text-xs tabular-nums">{i.date_declared || "—"}</td>
-                    <td className="py-2 pr-4 text-xs">
-                      {i.days_late != null ? (
-                        <span className={i.days_late > 0 ? "text-red-600 font-medium" : "text-gray-500"}>
-                          {i.days_late > 0 ? `+${i.days_late}` : i.days_late}
-                        </span>
-                      ) : "—"}
-                    </td>
-                    <td className="py-2">
-                      {i.source_url ? (
-                        <a href={i.source_url} target="_blank" rel="noopener noreferrer"
-                           className="text-xs text-blue-500 hover:underline">↗</a>
-                      ) : "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
 
       {/* Voting record */}
       <section>

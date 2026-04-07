@@ -48,15 +48,26 @@ def search(
         {"q": q, "limit": limit},
     ).mappings().all()
 
+    # Suppress party/donor alias entries when a matching politician is returned.
+    # e.g. "ALP NSW Branch - Tanya Plibersek" and "The Hon Tanya Plibersek Mp"
+    # should not appear alongside the politician "Tanya Plibersek".
+    pol_last_names = {r["name"].rsplit(" ", 1)[-1].lower() for r in politicians}
+
+    def _is_politician_alias(name: str) -> bool:
+        n = name.lower()
+        return any(last in n for last in pol_last_names)
+
     results: list[schemas.SearchResultItem] = []
     for r in politicians:
         results.append(schemas.SearchResultItem(
             id=r["id"], name=r["name"], type="politician", secondary=r["secondary"]))
     for r in parties:
-        results.append(schemas.SearchResultItem(
-            id=r["id"], name=r["name"], type="party", secondary=r["secondary"]))
+        if not _is_politician_alias(r["name"]):
+            results.append(schemas.SearchResultItem(
+                id=r["id"], name=r["name"], type="party", secondary=r["secondary"]))
     for r in donors:
-        results.append(schemas.SearchResultItem(
-            id=r["id"], name=r["name"], type="donor", secondary=r["secondary"]))
+        if not _is_politician_alias(r["name"]):
+            results.append(schemas.SearchResultItem(
+                id=r["id"], name=r["name"], type="donor", secondary=r["secondary"]))
 
     return schemas.SearchResponse(query=q, results=results)
