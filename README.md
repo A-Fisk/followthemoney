@@ -37,13 +37,20 @@ All data is sourced directly from official government records. Every data point 
 **Prerequisites:** Docker Desktop, Node.js 22+, [uv](https://docs.astral.sh/uv/)
 
 ```bash
-# 1. Start the database and backend
+# 1. Clone and configure environment
+cp .env.example .env
+# Edit .env — set TVFY_API_KEY at minimum; see optional keys below
+
+# 2. Start the database and backend
 docker compose up -d db backend
 
-# 2. Run the AEC data ingestion (downloads ~190k rows back to 1998)
-docker exec followthemoney-backend-1 uv run scripts/ingest_aec.py --data-dir /data/aec
+# 3. Run data ingestion (see pipeline section below for full sequence)
+cd backend
+uv run scripts/ingest_aec.py --data-dir /data/aec
+uv run scripts/ingest_register.py
+uv run scripts/ingest_tvfy.py --since 2004-01-01
 
-# 3. Start the frontend (dev mode, outside Docker)
+# 4. Start the frontend (dev mode)
 cd frontend && npm install && npm run dev
 ```
 
@@ -64,84 +71,181 @@ Services:
 .
 ├── backend/
 │   ├── app/
-│   │   ├── main.py          # FastAPI app, CORS, router registration
-│   │   ├── database.py      # SQLAlchemy engine and session
-│   │   └── models.py        # ORM models for all 10 tables
+│   │   ├── main.py              # FastAPI app, CORS, router registration
+│   │   ├── database.py          # SQLAlchemy engine and session
+│   │   ├── schemas.py           # Pydantic response models
+│   │   └── routers/             # API route handlers (politicians, parties, donors, search)
 │   ├── scripts/
-│   │   ├── ingest_aec.py       # AEC bulk CSV ingestion (Phase 1a)
-│   │   ├── enrich_abr.py       # ABR donor enrichment (Phase 1b)
-│   │   ├── ingest_register.py  # Register of Interests scraper (Phase 2)
-│   │   └── ingest_tvfy.py      # They Vote For You voting records (Phase 3)
+│   │   ├── ingest_aec.py        # AEC bulk CSV ingestion
+│   │   ├── enrich_abr.py        # ABR donor enrichment (ABN, industry codes)
+│   │   ├── ingest_register.py   # Register of Interests (House PDF + Senate API)
+│   │   ├── ingest_tvfy.py       # They Vote For You voting records
+│   │   ├── merge_politicians.py # Merge duplicate politician records
+│   │   ├── merge_parties.py     # Normalize duplicate party name variants
+│   │   ├── merge_donors.py      # Merge duplicate donor records (3 passes)
+│   │   ├── review_ambiguous.py  # LLM-assisted review of ambiguous donor merges
+│   │   └── llm_client.py        # Shared LLM client (Anthropic or Ollama via .env)
 │   ├── pyproject.toml
 │   └── Dockerfile
 ├── frontend/
-│   ├── app/                 # Next.js App Router pages
+│   ├── app/
+│   │   ├── politician/[id]/     # Politician profile page
+│   │   ├── party/[id]/          # Party profile page
+│   │   ├── donor/[id]/          # Donor profile page
+│   │   ├── brief/[id]/          # Journalist briefing card
+│   │   └── lib/api.ts           # Typed API fetch functions
 │   └── Dockerfile
 ├── db/
-│   └── init.sql             # Schema — runs automatically on first `docker compose up`
+│   └── init.sql                 # Schema — runs automatically on first `docker compose up`
 ├── data/
-│   └── aec/                 # Downloaded AEC CSVs (not committed)
+│   ├── aec/                     # Downloaded AEC CSVs (not committed)
+│   └── register/
+│       ├── pdfs/                # Cached House register PDFs
+│       ├── ocr_cache/           # Docling OCR results (JSON sidecars)
+│       └── llm_cache/           # LLM extraction results (JSON sidecars)
 ├── docker-compose.yml
-└── plan.md                  # Full project plan and phase breakdown
+└── .env.example                 # Copy to .env and fill in keys
 ```
 
 ---
 
 ## Data pipeline
 
-AEC data lives in `data/aec/` (excluded from git — large files). To refresh it:
+Run scripts from the `backend/` directory with `uv run scripts/<name>.py`.
+
+### 1. AEC donations
+
+Downloads bulk CSVs from the AEC Transparency Register (~190k rows back to 1998):
 
 ```bash
-# Re-download bulk CSVs from AEC
 mkdir -p data/aec && cd data/aec
 curl -L -o annual_data.zip https://transparency.aec.gov.au/Download/AllAnnualData
 curl -L -o election_data.zip https://transparency.aec.gov.au/Download/AllElectionsData
 unzip -o annual_data.zip -d annual
 unzip -o election_data.zip -d election
-
-# Re-run ingestion
-docker exec followthemoney-backend-1 uv run scripts/ingest_aec.py --data-dir /data/aec
+cd ../backend
+uv run scripts/ingest_aec.py --data-dir /data/aec
 ```
 
-### They Vote For You (Phase 3)
+### 2. ABR enrichment
 
-Requires a free API key — register at https://theyvoteforyou.org.au/help/data and add it to `.env`:
+Enriches donor records with ABN, entity type, and ANZSIC industry codes. Requires a free ABR GUID:
 
 ```bash
-TVFY_API_KEY=your-key-here
+# Register at https://abr.business.gov.au/Tools/WebServices
+# Add ABR_GUID=your-guid to .env
+uv run scripts/enrich_abr.py
 ```
 
-Then run:
+### 3. Register of Interests
+
+Scrapes the House of Representatives PDF register and the Senate JSON API. Image-only PDF pages are processed with docling OCR (results cached). When the rules-based parser gets no items from an OCR page, an LLM fallback is triggered (requires `LLM_API_KEY` in `.env`):
 
 ```bash
-# Import all votes from the 47th Parliament onwards (default)
-docker exec followthemoney-backend-1 uv run scripts/ingest_tvfy.py
+uv run scripts/ingest_register.py              # both chambers
+uv run scripts/ingest_register.py --senate     # Senate only
+uv run scripts/ingest_register.py --house      # House only
+uv run scripts/ingest_register.py --no-clear   # append mode
+```
 
-# Or run locally with uv
-UV_CACHE_DIR=/tmp/uv-cache uv run scripts/ingest_tvfy.py
+### 4. Voting records (They Vote For You)
 
-# Dry run to preview without writing
-uv run scripts/ingest_tvfy.py --dry-run
+Requires a free TVFY API key — register at https://theyvoteforyou.org.au/help/data.
 
-# Import from a specific date
-uv run scripts/ingest_tvfy.py --since 2019-07-01
+Fetches all divisions from 2004 onwards month-by-month (the API caps per-request results). Full history takes ~2 hours; use `--since` to limit:
+
+```bash
+uv run scripts/ingest_tvfy.py --since 2004-01-01   # full history (~2h)
+uv run scripts/ingest_tvfy.py --since 2022-05-21   # 47th Parliament only (~15min)
+uv run scripts/ingest_tvfy.py --dry-run            # preview without writing
+uv run scripts/ingest_tvfy.py --no-clear           # append / update existing data
+```
+
+### 5. Deduplication
+
+The AEC data contains donors in multiple name formats ("Smith, John" / "John Smith" / "John Smith Limited" / "John Smith Ltd"). Run after ingestion:
+
+```bash
+# Auto-merge 3,400+ unambiguous duplicates
+uv run scripts/merge_donors.py
+
+# Export the ~1,300 ambiguous cases
+uv run scripts/merge_donors.py --dry-run --export-ambiguous ambiguous.json
+```
+
+For the ambiguous cases there are three review options:
+
+**Option A — LLM only** (auto-approves high-confidence decisions, flags the rest):
+```bash
+uv run scripts/review_ambiguous.py ambiguous.json
+uv run scripts/merge_donors.py --apply-decisions decisions.json
+```
+
+**Option B — LLM then interactive** (LLM runs first, then drops into manual review for anything it wasn't confident about):
+```bash
+uv run scripts/review_ambiguous.py ambiguous.json --interactive
+uv run scripts/merge_donors.py --apply-decisions decisions.json
+```
+
+**Option C — Manual only** (skip LLM, review everything yourself):
+```bash
+uv run scripts/review_ambiguous.py ambiguous.json --interactive
+# or, after a prior LLM run:
+uv run scripts/review_ambiguous.py decisions.json --interactive
+uv run scripts/merge_donors.py --apply-decisions decisions.json
+```
+
+Interactive review keys: `y` merge · `n` reject · `c` choose canonical · `s` skip · `q` quit and save. Progress is saved after every answer so you can quit and resume safely.
+
+Party name variants (e.g. `Australian Labor Party (N.S.W. Branch)` vs `Australian Labor Party (NSW Branch)`, or AEC artefact suffixes like `- NSW`):
+
+```bash
+uv run scripts/merge_parties.py           # preview
+uv run scripts/merge_parties.py --dry-run # same, explicit
+```
+
+Two passes run automatically:
+1. **Suffix strip** — removes ` - ACT/NSW/NT/QLD/SA/TAS/VIC/WA/NATIONAL` artefacts
+2. **Canonical map** — applies a hardcoded variant→canonical mapping for known abbreviation/spelling differences
+
+To add mappings for other parties (Liberal, Greens, etc.), extend the `CANONICAL_MAP` dict in `scripts/merge_parties.py`.
+
+Politician duplicates (e.g. stubs from PDF slugs vs full TVFY names):
+
+```bash
+uv run scripts/merge_politicians.py
 ```
 
 ---
 
-## Phases
+## LLM configuration
 
-| Phase | Description | Status |
-|---|---|---|
-| 0 | Environment setup, schema, AEC data loaded | Done |
-| 1 | Data pipeline: donations + ABR/ASIC enrichment | Done (ABR awaiting GUID) |
-| 2 | Data pipeline: Register of Interests scraper | Done |
-| 3 | Data pipeline: They Vote For You voting records | Done (awaiting API key) |
-| 4 | Frontend: party, politician, and donor profile pages | Planned |
-| 5 | Cross-reference view: donor industries vs voting records | Planned |
-| 6 | Public API + bulk data download | Planned |
+Two features use an LLM: ambiguous donor review and register gift extraction fallback. Both read from `.env`:
 
-See `plan.md` for full detail on each phase.
+```bash
+# Anthropic (default)
+LLM_BASE_URL=https://api.anthropic.com/v1
+LLM_API_KEY=your-anthropic-key-here
+LLM_MODEL=claude-haiku-4-5-20251001
+
+# Ollama (local — no API key required)
+LLM_BASE_URL=http://localhost:11434/v1
+LLM_API_KEY=ollama
+LLM_MODEL=llama3.2
+```
+
+Switching providers requires only changing `.env` — no code changes. LLM results are cached to `data/register/llm_cache/` so re-runs don't re-call the API.
+
+---
+
+## What each politician page shows
+
+- **Register of Interests** — declared gifts and travel from the House/Senate register
+- **Top donors to their party** — top 10 donors to their party overall (links to full party profile)
+- **Direct donations received** — AEC-reported donations made directly to this politician
+- **Donations via named party branch** — donations to party branches named after the politician
+- **Donations made** — AEC donor records matching this politician's name
+- **Voting record** — every parliamentary division they voted in, filterable by parliament (41st–47th), with policy stance indicators (✓ supports / ✗ opposes) where TVFY has annotated the vote
 
 ---
 
@@ -157,4 +261,4 @@ See `plan.md` for full detail on each phase.
 
 ## Legal
 
-All data is sourced from public government records. The site presents correlation data only and does not assert causation or allege corrupt intent. Every claim links to a specific public record. See `plan.md` for full legal considerations.
+All data is sourced from public government records. The site presents correlation data only and does not assert causation or allege corrupt intent. Every claim links to a specific public record.

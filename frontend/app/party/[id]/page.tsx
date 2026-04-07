@@ -1,14 +1,112 @@
 import { notFound } from "next/navigation";
-import { fetchParty } from "../../lib/api";
+import { fetchParty, PartyDetail, TopDonorRow } from "../../lib/api";
+
+// ── Sort types ──────────────────────────────────────────────────────────────
+
+type YrSort  = "year"  | "total";
+type IndSort = "industry" | "total";
+type DonSort = "donor" | "industry" | "total";
+type ExpSort = "year"  | "category" | "amount";
+
+function sortByYear(rows: PartyDetail["donations_by_year"], s: YrSort) {
+  return [...rows].sort((a, b) =>
+    s === "total" ? b.total - a.total
+                  : (b.financial_year ?? "").localeCompare(a.financial_year ?? "")
+  );
+}
+
+function sortByInd(rows: PartyDetail["industry_breakdown"], s: IndSort) {
+  return [...rows].sort((a, b) =>
+    s === "industry" ? (a.industry_label ?? "").localeCompare(b.industry_label ?? "")
+                     : b.total - a.total
+  );
+}
+
+function sortTopDonors(rows: TopDonorRow[], s: DonSort) {
+  return [...rows].sort((a, b) => {
+    if (s === "donor")    return a.donor.name.localeCompare(b.donor.name);
+    if (s === "industry") return (a.donor.industry_label ?? "").localeCompare(b.donor.industry_label ?? "");
+    return b.total - a.total;
+  });
+}
+
+function sortExpenditure(rows: PartyDetail["expenditure"], s: ExpSort) {
+  return [...rows].sort((a, b) => {
+    if (s === "category") return (a.category ?? "").localeCompare(b.category ?? "");
+    if (s === "amount")   return b.amount - a.amount;
+    return (b.financial_year ?? "").localeCompare(a.financial_year ?? "");
+  });
+}
+
+// ── URL helper ───────────────────────────────────────────────────────────────
+
+function buildUrl(
+  current: Record<string, string | undefined>,
+  overrides: Record<string, string | undefined>
+): string {
+  const merged = { ...current, ...overrides };
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(merged)) {
+    if (v) p.set(k, v);
+  }
+  const s = p.toString();
+  return s ? `?${s}` : "?";
+}
+
+// ── Sort header helper ───────────────────────────────────────────────────────
+
+function SortTh({
+  label,
+  sortKey,
+  current,
+  href,
+  right,
+}: {
+  label: string;
+  sortKey: string;
+  current: string;
+  href: string;
+  right?: boolean;
+}) {
+  const active = current === sortKey;
+  return (
+    <th className={`py-2 pr-4 ${right ? "text-right" : ""}`}>
+      <a
+        href={href}
+        className={active ? "font-semibold text-gray-800" : "text-gray-500 hover:text-gray-700"}
+      >
+        {label}{active ? " ↓" : ""}
+      </a>
+    </th>
+  );
+}
+
+// ── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function PartyPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ yrs?: string; ind?: string; don?: string; exp?: string }>;
 }) {
   const { id } = await params;
+  const { yrs, ind, don, exp } = await searchParams;
+
+  const yrSort:  YrSort  = yrs === "total"    ? "total"    : "year";
+  const indSort: IndSort = ind === "industry" ? "industry" : "total";
+  const donSort: DonSort = don === "donor" || don === "industry" ? don : "total";
+  const expSort: ExpSort = exp === "category" || exp === "amount" ? exp : "year";
+
   const party = await fetchParty(id);
   if (!party) notFound();
+
+  const cp = { yrs, ind, don, exp }; // current params for URL building
+
+  const byYear    = sortByYear(party.donations_by_year, yrSort);
+  const byInd     = sortByInd(party.industry_breakdown, indSort);
+  const topDonors = sortTopDonors(party.top_donors, donSort);
+  const expRows   = sortExpenditure(party.expenditure, expSort);
 
   return (
     <div className="space-y-8">
@@ -35,18 +133,18 @@ export default async function PartyPage({
       </div>
 
       {/* Donations by year */}
-      {party.donations_by_year.length > 0 && (
+      {byYear.length > 0 && (
         <section>
           <h2 className="mb-3 font-semibold text-gray-900">Donations by year</h2>
           <table className="w-full text-sm border-collapse">
             <thead>
-              <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
-                <th className="py-2 pr-4">Financial year</th>
-                <th className="py-2 text-right">Total</th>
+              <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                <SortTh label="Financial year" sortKey="year"  current={yrSort} href={buildUrl(cp, { yrs: "year" })} />
+                <SortTh label="Total"          sortKey="total" current={yrSort} href={buildUrl(cp, { yrs: "total" })} right />
               </tr>
             </thead>
             <tbody>
-              {party.donations_by_year.map((r) => (
+              {byYear.map((r) => (
                 <tr key={r.financial_year} className="border-b border-gray-100">
                   <td className="py-2 pr-4">{r.financial_year}</td>
                   <td className="py-2 text-right tabular-nums">
@@ -60,18 +158,18 @@ export default async function PartyPage({
       )}
 
       {/* Industry breakdown */}
-      {party.industry_breakdown.length > 0 && (
+      {byInd.length > 0 && (
         <section>
           <h2 className="mb-3 font-semibold text-gray-900">Donations by industry</h2>
           <table className="w-full text-sm border-collapse">
             <thead>
-              <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
-                <th className="py-2 pr-4">Industry</th>
-                <th className="py-2 text-right">Total</th>
+              <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                <SortTh label="Industry" sortKey="industry" current={indSort} href={buildUrl(cp, { ind: "industry" })} />
+                <SortTh label="Total"    sortKey="total"    current={indSort} href={buildUrl(cp, { ind: "total" })} right />
               </tr>
             </thead>
             <tbody>
-              {party.industry_breakdown.slice(0, 20).map((r) => (
+              {byInd.slice(0, 20).map((r) => (
                 <tr key={r.industry_label} className="border-b border-gray-100">
                   <td className="py-2 pr-4">{r.industry_label}</td>
                   <td className="py-2 text-right tabular-nums">
@@ -85,19 +183,19 @@ export default async function PartyPage({
       )}
 
       {/* Top donors */}
-      {party.top_donors.length > 0 && (
+      {topDonors.length > 0 && (
         <section>
           <h2 className="mb-3 font-semibold text-gray-900">Top donors</h2>
           <table className="w-full text-sm border-collapse">
             <thead>
-              <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
-                <th className="py-2 pr-4">Donor</th>
-                <th className="py-2 pr-4">Industry</th>
-                <th className="py-2 text-right">Total</th>
+              <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                <SortTh label="Donor"    sortKey="donor"    current={donSort} href={buildUrl(cp, { don: "donor" })} />
+                <SortTh label="Industry" sortKey="industry" current={donSort} href={buildUrl(cp, { don: "industry" })} />
+                <SortTh label="Total"    sortKey="total"    current={donSort} href={buildUrl(cp, { don: "total" })} right />
               </tr>
             </thead>
             <tbody>
-              {party.top_donors.map((r) => (
+              {topDonors.map((r) => (
                 <tr key={r.donor.id} className="border-b border-gray-100 hover:bg-gray-50">
                   <td className="py-2 pr-4">
                     <a href={`/donor/${r.donor.id}`} className="text-blue-600 hover:underline">
@@ -121,19 +219,19 @@ export default async function PartyPage({
       )}
 
       {/* Expenditure */}
-      {party.expenditure.length > 0 && (
+      {expRows.length > 0 && (
         <section>
           <h2 className="mb-3 font-semibold text-gray-900">Expenditure</h2>
           <table className="w-full text-sm border-collapse">
             <thead>
-              <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
-                <th className="py-2 pr-4">Year</th>
-                <th className="py-2 pr-4">Category</th>
-                <th className="py-2 text-right">Amount</th>
+              <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                <SortTh label="Year"     sortKey="year"     current={expSort} href={buildUrl(cp, { exp: "year" })} />
+                <SortTh label="Category" sortKey="category" current={expSort} href={buildUrl(cp, { exp: "category" })} />
+                <SortTh label="Amount"   sortKey="amount"   current={expSort} href={buildUrl(cp, { exp: "amount" })} right />
               </tr>
             </thead>
             <tbody>
-              {party.expenditure.map((r, i) => (
+              {expRows.map((r, i) => (
                 <tr key={i} className="border-b border-gray-100">
                   <td className="py-2 pr-4">{r.financial_year}</td>
                   <td className="py-2 pr-4 text-gray-600">{r.category}</td>

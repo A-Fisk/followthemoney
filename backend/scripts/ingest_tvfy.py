@@ -13,7 +13,7 @@ Usage:
 
 Options:
     --since DATE   Import votes on or after this date
-                   (default: 2022-05-21, start of 47th Parliament)
+                   (default: 2004-01-01, full TVFY history)
     --dry-run      Print stats without writing to DB
     --no-clear     Append to existing data instead of truncating
 """
@@ -93,21 +93,53 @@ def tvfy_get(path: str, **params) -> dict | list:
 
 
 def fetch_divisions(since: date) -> list[dict]:
+    """
+    Fetch all divisions on or after `since`.
+
+    TVFY's divisions.json endpoint caps results (~100 per request). We iterate
+    month-by-month with start_date/end_date parameters to page through the full
+    historical record without hitting the cap.
+    """
+    from calendar import monthrange
+
     print("Fetching division lists from TVFY...")
+    seen_ids: set[int] = set()
     result = []
-    for house in ("representatives", "senate"):
-        divs = tvfy_get("divisions.json", house=house)
-        if not isinstance(divs, list):
-            print(f"  Unexpected response for {house}", file=sys.stderr)
-            continue
-        for d in divs:
-            try:
-                div_date = datetime.strptime(d["date"], "%Y-%m-%d").date()
-            except (KeyError, ValueError):
+    today = date.today()
+
+    # Generate (year, month) pairs from since → today
+    y, m = since.year, since.month
+    windows: list[tuple[str, str]] = []
+    while (y, m) <= (today.year, today.month):
+        last_day = monthrange(y, m)[1]
+        window_end = min(date(y, m, last_day), today)
+        windows.append((f"{y}-{m:02d}-01", window_end.strftime("%Y-%m-%d")))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+
+    for start_str, end_str in windows:
+        for house in ("representatives", "senate"):
+            divs = tvfy_get("divisions.json", house=house, start_date=start_str, end_date=end_str)
+            if not isinstance(divs, list):
                 continue
-            if div_date >= since:
+            new_in_window = 0
+            for d in divs:
+                div_id = d.get("id")
+                if div_id in seen_ids:
+                    continue
+                try:
+                    datetime.strptime(d["date"], "%Y-%m-%d")
+                except (KeyError, ValueError):
+                    continue
+                seen_ids.add(div_id)
                 result.append(d)
-    print(f"  {len(result)} divisions on or after {since}")
+                new_in_window += 1
+            if new_in_window:
+                print(f"  {start_str[:7]} {house}: +{new_in_window} (total {len(result)})")
+
+    print(f"  Total: {len(result)} divisions on or after {since}")
     return result
 
 
@@ -231,8 +263,8 @@ def main():
     parser = argparse.ArgumentParser(description="Ingest They Vote For You voting records")
     parser.add_argument(
         "--since",
-        default="2022-05-21",
-        help="Import votes on or after YYYY-MM-DD (default: 2022-05-21, start of 47th Parliament)",
+        default="2004-01-01",
+        help="Import votes on or after YYYY-MM-DD (default: 2004-01-01, full TVFY history)",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print stats without writing to DB")
     parser.add_argument("--no-clear", action="store_true", help="Append instead of truncating")
