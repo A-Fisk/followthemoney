@@ -41,6 +41,7 @@ SENATE_API_BASE = "https://pbs-apim-aqcdgxhvaug7f8em.z01.azurefd.net/api"
 
 PDF_CACHE_DIR = Path(__file__).parent.parent.parent / "data" / "register" / "pdfs"
 OCR_CACHE_DIR = Path(__file__).parent.parent.parent / "data" / "register" / "ocr_cache"
+LLM_CACHE_DIR = Path(__file__).parent.parent.parent / "data" / "register" / "llm_cache"
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -632,6 +633,80 @@ def _ocr_pdf(pdf_path: Path) -> dict[int, str]:
         return {}
 
 
+def llm_parse_alteration_page(text: str, date_declared, cache_key: str) -> list[dict]:
+    """
+    LLM fallback for alteration pages where the rules-based parser returns 0 items.
+
+    Calls the configured LLM (see .env: LLM_BASE_URL / LLM_MODEL / LLM_API_KEY)
+    and asks it to extract structured gift/travel records from the raw OCR text.
+    Results are cached to LLM_CACHE_DIR so re-ingestion doesn't re-call the API.
+
+    Returns the same format as parse_alteration_page_text:
+        [{description, date_declared, item_type}, ...]
+    """
+    import json
+    import hashlib
+
+    LLM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = LLM_CACHE_DIR / f"{cache_key}.json"
+    if cache_file.exists():
+        return json.loads(cache_file.read_text())
+
+    # Import lazily so the rest of the script works without LLM_API_KEY set
+    try:
+        from llm_client import chat_json, LLM_MODEL
+    except EnvironmentError as e:
+        print(f"  [LLM] Skipping — {e}", file=sys.stderr)
+        return []
+
+    prompt = f"""\
+You are parsing an Australian politician's Register of Interests alteration page.
+Extract all declared gifts and sponsored travel/hospitality items from the text below.
+
+Return JSON with a single key "items", containing a list of objects with:
+  - "description": full description of the gift or trip (string)
+  - "item_type": either "11. Gifts" or "12. Travel Or Hospitality"
+  - "date_received": date received in YYYY-MM-DD format if mentioned, else null
+  - "provider": name of the person/organisation that gave the gift, if mentioned, else null
+
+Only include items in the ADDITION section. Ignore DELETION entries and signature blocks.
+If there are no items, return {{"items": []}}.
+
+Raw text:
+---
+{text[:4000]}
+---"""
+
+    try:
+        result = chat_json(
+            [{"role": "user", "content": prompt}],
+            max_tokens=1024,
+        )
+        items = result.get("items", [])
+    except Exception as e:
+        print(f"  [LLM] Error: {e}", file=sys.stderr)
+        items = []
+
+    # Normalise to the standard format expected by the caller
+    output = []
+    for item in items:
+        desc = (item.get("description") or "").strip()
+        if not desc:
+            continue
+        # Append provider to description if separate (mirrors how manual entries look)
+        provider = (item.get("provider") or "").strip()
+        if provider and provider.lower() not in desc.lower():
+            desc = f"{desc} — {provider}"
+        output.append({
+            "description": desc,
+            "date_declared": date_declared,
+            "item_type": item.get("item_type") or "11. Gifts",
+        })
+
+    cache_file.write_text(json.dumps(output))
+    return output
+
+
 def parse_alteration_page_text(text: str, date_declared) -> list[dict]:
     """
     Parse a single alteration page whose text came from docling OCR.
@@ -752,7 +827,14 @@ def parse_house_pdf(pdf_path: Path) -> list[dict]:
                 dm = _SUBMITTED_DATE.search(page_text)
                 if dm:
                     date_declared = extract_date(dm.group(1))
-                for alt in parse_alteration_page_text(page_text, date_declared):
+                alts = parse_alteration_page_text(page_text, date_declared)
+                if not alts:
+                    # Rules-based parser got nothing — try LLM fallback
+                    cache_key = f"{pdf_path.stem}_p{pg_num}"
+                    alts = llm_parse_alteration_page(page_text, date_declared, cache_key)
+                    if alts:
+                        print(f"      LLM extracted {len(alts)} item(s) from p{pg_num}")
+                for alt in alts:
                     interest_type = (
                         "gift" if "gift" in alt["item_type"].lower()
                         else "travel_hospitality"

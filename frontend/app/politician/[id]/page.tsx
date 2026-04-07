@@ -2,6 +2,36 @@ import React from "react";
 import { notFound } from "next/navigation";
 import { fetchPolitician, VoteRow, PolicyPosition } from "../../lib/api";
 
+// Australian federal parliaments covered by TVFY
+const PARLIAMENTS: { number: number; start: string; end: string | null }[] = [
+  { number: 47, start: "2022-07-26", end: null },
+  { number: 46, start: "2019-07-02", end: "2022-07-25" },
+  { number: 45, start: "2016-08-30", end: "2019-07-01" },
+  { number: 44, start: "2013-11-12", end: "2016-08-29" },
+  { number: 43, start: "2010-09-28", end: "2013-11-11" },
+  { number: 42, start: "2008-02-12", end: "2010-09-27" },
+  { number: 41, start: "2004-11-16", end: "2008-02-11" },
+];
+
+function voteParliament(voteDate: string | null): number | null {
+  if (!voteDate) return null;
+  for (const p of PARLIAMENTS) {
+    if (voteDate >= p.start && (p.end === null || voteDate <= p.end)) {
+      return p.number;
+    }
+  }
+  return null;
+}
+
+function buildUrl(params: Record<string, string | undefined>): string {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v) p.set(k, v);
+  }
+  const s = p.toString();
+  return s ? `?${s}` : "?";
+}
+
 function policyStance(positions: PolicyPosition[], voteDirection: string): React.ReactNode {
   return (
     <ul className="space-y-0.5">
@@ -47,17 +77,28 @@ export default async function PoliticianPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ sort?: string }>;
+  searchParams: Promise<{ sort?: string; parliament?: string }>;
 }) {
   const { id } = await params;
-  const { sort } = await searchParams;
+  const { sort, parliament } = await searchParams;
   const voteSort: VoteSort = sort === "vote" || sort === "issue" ? sort : "date";
+  const selectedParliament = parliament ? Number(parliament) : null;
 
   const pol = await fetchPolitician(id);
   if (!pol) notFound();
 
   const chamberLabel = pol.chamber === "house" ? "House of Representatives" : pol.chamber === "senate" ? "Senate" : null;
-  const sortedVotes = sortVotes(pol.votes, voteSort);
+
+  // Determine which parliaments this politician has votes in
+  const parliamentsWithVotes = [
+    ...new Set(pol.votes.map((v) => voteParliament(v.vote_date)).filter((n): n is number => n !== null)),
+  ].sort((a, b) => b - a);
+
+  const filteredVotes = selectedParliament
+    ? pol.votes.filter((v) => voteParliament(v.vote_date) === selectedParliament)
+    : pol.votes;
+
+  const sortedVotes = sortVotes(filteredVotes, voteSort);
 
   return (
     <div className="space-y-8">
@@ -347,10 +388,12 @@ export default async function PoliticianPage({
 
       {/* Voting record */}
       <section>
-        <div className="mb-3 flex items-center gap-4">
+        <div className="mb-2 flex flex-wrap items-center gap-4">
           <h2 className="font-semibold text-gray-900">
             Voting record{" "}
-            <span className="font-normal text-gray-400 text-sm">({pol.votes.length})</span>
+            <span className="font-normal text-gray-400 text-sm">
+              ({filteredVotes.length}{selectedParliament ? ` in ${selectedParliament}th Parliament` : ` of ${pol.votes.length}`})
+            </span>
           </h2>
           {pol.votes.length > 0 && (
             <span className="text-xs text-gray-400">
@@ -358,7 +401,7 @@ export default async function PoliticianPage({
               {(["date", "vote", "issue"] as VoteSort[]).map((s) => (
                 <a
                   key={s}
-                  href={`?sort=${s}`}
+                  href={buildUrl({ sort: s, parliament: parliament })}
                   className={`mr-2 ${voteSort === s ? "font-semibold text-gray-700" : "text-blue-600 hover:underline"}`}
                 >
                   {s}
@@ -367,8 +410,29 @@ export default async function PoliticianPage({
             </span>
           )}
         </div>
+        {parliamentsWithVotes.length > 1 && (
+          <div className="mb-3 flex flex-wrap gap-1 text-xs">
+            <a
+              href={buildUrl({ sort: voteSort !== "date" ? voteSort : undefined })}
+              className={`rounded px-2 py-1 ${!selectedParliament ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+            >
+              All
+            </a>
+            {parliamentsWithVotes.map((p) => (
+              <a
+                key={p}
+                href={buildUrl({ sort: voteSort !== "date" ? voteSort : undefined, parliament: String(p) })}
+                className={`rounded px-2 py-1 ${selectedParliament === p ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+              >
+                {p}th
+              </a>
+            ))}
+          </div>
+        )}
         {pol.votes.length === 0 ? (
           <p className="text-sm text-gray-400">No voting record on file.</p>
+        ) : filteredVotes.length === 0 ? (
+          <p className="text-sm text-gray-400">No votes found for the {selectedParliament}th Parliament.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
@@ -424,7 +488,7 @@ export default async function PoliticianPage({
             </table>
           </div>
         )}
-        {pol.votes.length > 0 && (
+        {filteredVotes.length > 0 && (
           <p className="mt-2 text-xs text-gray-400">
             Voting data sourced from{" "}
             <a href="https://theyvoteforyou.org.au" target="_blank" rel="noopener noreferrer"
