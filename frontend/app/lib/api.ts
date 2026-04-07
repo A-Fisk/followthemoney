@@ -77,8 +77,29 @@ export interface VoteRow {
   tvfy_number: number | null;
 }
 
+export interface PartyBranchDonation extends DonationRow {
+  party_id: number;
+  party_name: string;
+}
+
+export interface AsDonorDonation {
+  id: number;
+  amount: number;
+  financial_year: string;
+  donation_type: string | null;
+  source_url: string | null;
+  donor_id: number;
+  donor_name: string;
+  recipient_party_id: number | null;
+  recipient_party_name: string | null;
+  recipient_politician_id: number | null;
+  recipient_politician_name: string | null;
+}
+
 export interface PoliticianDetail extends PoliticianMin {
   direct_donations: DonationRow[];
+  via_party_donations: PartyBranchDonation[];
+  as_donor_donations: AsDonorDonation[];
   interests: InterestRow[];
   votes: VoteRow[];
 }

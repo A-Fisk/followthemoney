@@ -127,6 +127,106 @@ export default async function PoliticianPage({
         )}
       </section>
 
+      {/* Via party branch donations */}
+      {pol.via_party_donations.length > 0 && (
+        <section>
+          <h2 className="mb-3 font-semibold text-gray-900">
+            Donations via named party branch{" "}
+            <span className="font-normal text-gray-400 text-sm">({pol.via_party_donations.length})</span>
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
+                  <th className="py-2 pr-4">Year</th>
+                  <th className="py-2 pr-4 text-right">Amount</th>
+                  <th className="py-2 pr-4">Donor</th>
+                  <th className="py-2 pr-4">Party branch</th>
+                  <th className="py-2">Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pol.via_party_donations.map((d) => (
+                  <tr key={d.id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-2 pr-4">{d.financial_year}</td>
+                    <td className="py-2 pr-4 text-right tabular-nums">
+                      ${d.amount.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
+                    </td>
+                    <td className="py-2 pr-4">
+                      {d.donor ? (
+                        <a href={`/donor/${d.donor.id}`} className="text-blue-600 hover:underline">
+                          {d.donor.name}
+                        </a>
+                      ) : "—"}
+                    </td>
+                    <td className="py-2 pr-4 text-xs text-gray-500">
+                      <a href={`/party/${d.party_id}`} className="hover:underline">{d.party_name}</a>
+                    </td>
+                    <td className="py-2">
+                      {d.source_url ? (
+                        <a href={d.source_url} target="_blank" rel="noopener noreferrer"
+                           className="text-xs text-blue-500 hover:underline">AEC ↗</a>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* Donations made as a donor */}
+      {pol.as_donor_donations.length > 0 && (
+        <section>
+          <h2 className="mb-3 font-semibold text-gray-900">
+            Donations made{" "}
+            <span className="font-normal text-gray-400 text-sm">({pol.as_donor_donations.length})</span>
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
+                  <th className="py-2 pr-4">Year</th>
+                  <th className="py-2 pr-4 text-right">Amount</th>
+                  <th className="py-2 pr-4">Donor name</th>
+                  <th className="py-2 pr-4">Recipient</th>
+                  <th className="py-2">Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pol.as_donor_donations.map((d) => (
+                  <tr key={d.id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-2 pr-4">{d.financial_year}</td>
+                    <td className="py-2 pr-4 text-right tabular-nums">
+                      ${d.amount.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
+                    </td>
+                    <td className="py-2 pr-4 text-xs text-gray-500">{d.donor_name}</td>
+                    <td className="py-2 pr-4 text-xs">
+                      {d.recipient_party_id ? (
+                        <a href={`/party/${d.recipient_party_id}`} className="text-blue-600 hover:underline">
+                          {d.recipient_party_name}
+                        </a>
+                      ) : d.recipient_politician_id ? (
+                        <a href={`/politician/${d.recipient_politician_id}`} className="text-blue-600 hover:underline">
+                          {d.recipient_politician_name}
+                        </a>
+                      ) : "—"}
+                    </td>
+                    <td className="py-2">
+                      {d.source_url ? (
+                        <a href={d.source_url} target="_blank" rel="noopener noreferrer"
+                           className="text-xs text-blue-500 hover:underline">AEC ↗</a>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       {/* Register of Interests */}
       <section>
         <h2 className="mb-3 font-semibold text-gray-900">

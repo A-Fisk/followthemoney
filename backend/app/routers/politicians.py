@@ -99,6 +99,42 @@ def get_politician(id: int, format: str | None = None, db: Session = Depends(get
         {"id": id},
     ).mappings().all()
 
+    # Via-party-branch donations: donations to parties whose name contains the
+    # politician's last name (e.g. "ALP NSW Branch - Tanya Plibersek")
+    last_name = pol["name"].rsplit(" ", 1)[-1]
+    via_party_rows = db.execute(
+        text("""
+            SELECT d.id, d.amount, d.financial_year, d.donation_type, d.source_url,
+                   dn.id AS donor_id, dn.name AS donor_name,
+                   dn.industry_label, dn.needs_review,
+                   pt.id AS party_id, pt.name AS party_name
+            FROM donations d
+            JOIN parties pt ON pt.id = d.recipient_party_id
+            LEFT JOIN donors dn ON dn.id = d.donor_id
+            WHERE pt.name ILIKE '%' || :last_name || '%'
+            ORDER BY d.financial_year DESC, d.amount DESC
+        """),
+        {"last_name": last_name},
+    ).mappings().all()
+
+    # Donations made by donor records matching this politician's name
+    # (covers "Ms Tanya Plibersek Mp", "The Hon Tanya Plibersek Mp", etc.)
+    as_donor_rows = db.execute(
+        text("""
+            SELECT d.id, d.amount, d.financial_year, d.donation_type, d.source_url,
+                   dn.id AS donor_id, dn.name AS donor_name,
+                   pt.id AS recipient_party_id, pt.name AS recipient_party_name,
+                   p2.id AS recipient_politician_id, p2.name AS recipient_politician_name
+            FROM donations d
+            JOIN donors dn ON dn.id = d.donor_id
+            LEFT JOIN parties pt ON pt.id = d.recipient_party_id
+            LEFT JOIN politicians p2 ON p2.id = d.recipient_politician_id
+            WHERE dn.name ILIKE '%' || :last_name || '%'
+            ORDER BY d.financial_year DESC, d.amount DESC
+        """),
+        {"last_name": last_name},
+    ).mappings().all()
+
     # Votes
     votes_rows = db.execute(
         text("""
@@ -163,8 +199,34 @@ def get_politician(id: int, format: str | None = None, db: Session = Depends(get
         for r in votes_rows
     ]
 
+    via_party = [
+        schemas.PartyBranchDonation(
+            id=r["id"], amount=float(r["amount"]), financial_year=r["financial_year"],
+            donation_type=r["donation_type"], source_url=r["source_url"],
+            party_id=r["party_id"], party_name=r["party_name"],
+            donor=schemas.DonorMin(id=r["donor_id"], name=r["donor_name"],
+                                   industry_label=r["industry_label"],
+                                   needs_review=r["needs_review"]) if r["donor_id"] else None,
+        )
+        for r in via_party_rows
+    ]
+
+    as_donor = [
+        schemas.AsDonorDonation(
+            id=r["id"], amount=float(r["amount"]), financial_year=r["financial_year"],
+            donation_type=r["donation_type"], source_url=r["source_url"],
+            donor_id=r["donor_id"], donor_name=r["donor_name"],
+            recipient_party_id=r["recipient_party_id"],
+            recipient_party_name=r["recipient_party_name"],
+            recipient_politician_id=r["recipient_politician_id"],
+            recipient_politician_name=r["recipient_politician_name"],
+        )
+        for r in as_donor_rows
+    ]
+
     return schemas.PoliticianDetail(
         id=pol["id"], name=pol["name"], chamber=pol["chamber"],
         electorate=pol["electorate"], active=pol["active"],
-        party=party, direct_donations=donations, interests=interests, votes=votes,
+        party=party, direct_donations=donations, via_party_donations=via_party,
+        as_donor_donations=as_donor, interests=interests, votes=votes,
     )

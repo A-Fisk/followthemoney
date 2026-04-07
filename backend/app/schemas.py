@@ -129,6 +129,27 @@ class ExpenditureRow(BaseModel):
 
 # ── Detail responses ───────────────────────────────────────────────────────────
 
+class PartyBranchDonation(DonationRow):
+    """Donation received by a party branch named after this politician."""
+    party_id: int
+    party_name: str
+
+
+class AsDonorDonation(BaseModel):
+    """Donation made by a donor record matching this politician's name."""
+    id: int
+    amount: float
+    financial_year: str
+    donation_type: str | None = None
+    source_url: str | None = None
+    donor_id: int
+    donor_name: str
+    recipient_party_id: int | None = None
+    recipient_party_name: str | None = None
+    recipient_politician_id: int | None = None
+    recipient_politician_name: str | None = None
+
+
 class PoliticianDetail(BaseModel):
     id: int
     name: str
@@ -137,6 +158,8 @@ class PoliticianDetail(BaseModel):
     active: bool = True
     party: PartyMin | None = None
     direct_donations: list[DonationRow] = []
+    via_party_donations: list[PartyBranchDonation] = []
+    as_donor_donations: list[AsDonorDonation] = []
     interests: list[InterestRow] = []
     votes: list[VoteRow] = []
 
