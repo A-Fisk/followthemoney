@@ -65,6 +65,11 @@ export interface InterestRow {
   donor: DonorMin | null;
 }
 
+export interface PolicyPosition {
+  name: string;
+  vote: "aye" | "no"; // direction that SUPPORTS this policy
+}
+
 export interface VoteRow {
   id: number;
   vote_direction: string;
@@ -72,6 +77,7 @@ export interface VoteRow {
   bill_id: number;
   bill_title: string;
   issue_tags: string[] | null;
+  policy_positions: PolicyPosition[] | null;
   theyvoteforyou_id: string | null;
   tvfy_house: string | null;
   tvfy_number: number | null;

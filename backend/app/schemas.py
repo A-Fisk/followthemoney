@@ -87,6 +87,11 @@ class InterestRow(BaseModel):
 
 # ── Vote row ───────────────────────────────────────────────────────────────────
 
+class PolicyPosition(BaseModel):
+    name: str
+    vote: str  # "aye" or "no" — the direction that SUPPORTS this policy
+
+
 class VoteRow(BaseModel):
     id: int
     vote_direction: str
@@ -94,6 +99,7 @@ class VoteRow(BaseModel):
     bill_id: int
     bill_title: str
     issue_tags: list[str] | None = None
+    policy_positions: list[PolicyPosition] | None = None
     theyvoteforyou_id: str | None = None
     tvfy_house: str | None = None
     tvfy_number: int | None = None

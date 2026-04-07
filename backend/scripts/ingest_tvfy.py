@@ -117,17 +117,20 @@ def fetch_division_detail(div_id: int) -> dict:
     return detail if isinstance(detail, dict) else {}
 
 
-def build_policy_map() -> dict[int, list[str]]:
+def build_policy_map() -> dict[int, list[dict]]:
     """
-    Build a reverse map of division_id → [policy_name, ...] by fetching all
+    Build a reverse map of division_id → [{name, vote}, ...] by fetching all
     policies. TVFY tags live on the policy side, not the division side.
+
+    `vote` is "aye" or "no" — the direction that SUPPORTS the policy position.
+    e.g. if vote="aye", a politician who voted aye SUPPORTS the policy.
     """
     policies = tvfy_get("policies.json")
     if not isinstance(policies, list):
         print("  Could not fetch policies list", file=sys.stderr)
         return {}
     print(f"  Fetching {len(policies)} policy details to build tag map...")
-    div_to_policies: dict[int, list[str]] = {}
+    div_to_policies: dict[int, list[dict]] = {}
     for i, policy in enumerate(policies, 1):
         detail = tvfy_get(f"policies/{policy['id']}.json")
         time.sleep(0.35)
@@ -137,7 +140,10 @@ def build_policy_map() -> dict[int, list[str]]:
         for pd in detail.get("policy_divisions", []):
             div_id = pd.get("division", {}).get("id")
             if div_id is not None:
-                div_to_policies.setdefault(div_id, []).append(name)
+                div_to_policies.setdefault(div_id, []).append({
+                    "name": name,
+                    "vote": pd.get("vote", "aye"),  # direction that supports policy
+                })
         if i % 50 == 0:
             print(f"  ... {i}/{len(policies)} policies fetched")
     tagged = sum(1 for v in div_to_policies.values() if v)
@@ -192,15 +198,22 @@ def upsert_politician(cur, member: dict, div_house: str | None = None) -> int | 
 
 # ── Tagging helpers ────────────────────────────────────────────────────────────
 
-def extract_issue_tags(detail: dict, policy_map: dict[int, list[str]] | None = None) -> list[str]:
-    # Primary: look up pre-built policy map (tags live on policy side in TVFY)
+def extract_policy_positions(detail: dict, policy_map: dict[int, list[dict]] | None = None) -> list[dict]:
+    """Return [{name, vote}, ...] — 'vote' is the direction that supports the policy."""
     if policy_map is not None:
         div_id = detail.get("id")
         if div_id and div_id in policy_map:
             return policy_map[div_id]
-    # Fallback: check policy_divisions on the division itself (populated for older/edited divisions)
+    # Fallback: policy_divisions on the division itself (older/edited divisions)
     policy_divisions = detail.get("policy_divisions") or []
-    return [pd["policy"]["name"] for pd in policy_divisions if pd.get("policy")]
+    return [
+        {"name": pd["policy"]["name"], "vote": pd.get("vote", "aye")}
+        for pd in policy_divisions if pd.get("policy")
+    ]
+
+
+def extract_issue_tags(detail: dict, policy_map: dict[int, list[dict]] | None = None) -> list[str]:
+    return [p["name"] for p in extract_policy_positions(detail, policy_map)]
 
 
 def tags_to_anzsic(tags: list[str]) -> list[str]:
@@ -271,7 +284,8 @@ def main():
                 print("SKIP (no detail)")
                 continue
 
-            tags = extract_issue_tags(detail, policy_map)
+            positions = extract_policy_positions(detail, policy_map)
+            tags = [p["name"] for p in positions]
             anzsic_codes = tags_to_anzsic(tags)
             div_house = detail.get("house") or div.get("house")
             member_votes = detail.get("votes") or []
@@ -287,19 +301,21 @@ def main():
                     tvfy_number = detail.get("number") or div.get("number")
                     cur.execute(
                         """
-                        INSERT INTO bills (title, issue_tags, summary, theyvoteforyou_id, tvfy_house, tvfy_number)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO bills (title, issue_tags, policy_positions, summary, theyvoteforyou_id, tvfy_house, tvfy_number)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (theyvoteforyou_id) DO UPDATE SET
-                            title       = EXCLUDED.title,
-                            issue_tags  = EXCLUDED.issue_tags,
-                            summary     = EXCLUDED.summary,
-                            tvfy_house  = EXCLUDED.tvfy_house,
-                            tvfy_number = EXCLUDED.tvfy_number
+                            title            = EXCLUDED.title,
+                            issue_tags       = EXCLUDED.issue_tags,
+                            policy_positions = EXCLUDED.policy_positions,
+                            summary          = EXCLUDED.summary,
+                            tvfy_house       = EXCLUDED.tvfy_house,
+                            tvfy_number      = EXCLUDED.tvfy_number
                         RETURNING id
                         """,
                         (
                             detail.get("name") or div["name"],
                             tags or None,
+                            json.dumps(positions) if positions else None,
                             (detail.get("motion") or "")[:2000] or None,
                             str(div_id),
                             div_house,

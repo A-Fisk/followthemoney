@@ -1,5 +1,22 @@
+import React from "react";
 import { notFound } from "next/navigation";
-import { fetchPolitician, VoteRow } from "../../lib/api";
+import { fetchPolitician, VoteRow, PolicyPosition } from "../../lib/api";
+
+function policyStance(positions: PolicyPosition[], voteDirection: string): React.ReactNode {
+  return (
+    <ul className="space-y-0.5">
+      {positions.map((p) => {
+        const supports = p.vote === voteDirection;
+        return (
+          <li key={p.name} className={supports ? "text-green-700" : "text-red-600"}>
+            <span className="mr-1">{supports ? "✓" : "✗"}</span>
+            {supports ? "supports" : "opposes"} {p.name}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 function tvfyUrl(v: VoteRow): string | null {
   if (v.tvfy_house && v.vote_date && v.tvfy_number != null) {
@@ -392,8 +409,13 @@ export default async function PoliticianPage({
                           </a>
                         ) : v.bill_title}
                       </td>
-                      <td className="py-2 text-xs text-gray-400">
-                        {v.issue_tags?.slice(0, 3).join(", ") || "—"}
+                      <td className="py-2 text-xs max-w-xs">
+                        {v.policy_positions?.length
+                          ? policyStance(v.policy_positions, v.vote_direction)
+                          : v.issue_tags?.slice(0, 3).join(", ")
+                            ? <span className="text-gray-400">{v.issue_tags.slice(0, 3).join(", ")}</span>
+                            : <span className="text-gray-300">—</span>
+                        }
                       </td>
                     </tr>
                   );
