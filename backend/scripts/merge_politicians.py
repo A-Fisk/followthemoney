@@ -93,6 +93,25 @@ def find_match(cur, stub_name: str, stub_id: int) -> list[tuple[int, str]]:
     return candidates
 
 
+def merge_records(conn, source_id: int, target_id: int, source_name: str, target_name: str,
+                  interests: int, votes: int, donations: int, dry_run: bool) -> None:
+    print(f"MERGE  {source_name!r:35} ({interests}i/{votes}v/{donations}d) → {target_name!r} (id={target_id})")
+    if dry_run:
+        return
+    with conn.cursor() as cur:
+        if interests:
+            cur.execute("UPDATE interests SET politician_id = %s WHERE politician_id = %s", (target_id, source_id))
+        if votes:
+            cur.execute("UPDATE votes SET politician_id = %s WHERE politician_id = %s", (target_id, source_id))
+        if donations:
+            cur.execute(
+                "UPDATE donations SET recipient_politician_id = %s WHERE recipient_politician_id = %s",
+                (target_id, source_id),
+            )
+        cur.execute("DELETE FROM politicians WHERE id = %s", (source_id,))
+    conn.commit()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Merge duplicate politician records")
     parser.add_argument("--dry-run", action="store_true", help="Print plan without writing")
@@ -128,38 +147,67 @@ def main():
 
             if len(matches) == 1:
                 target_id, target_name = matches[0]
-                print(f"MERGE  {stub_name!r:25} ({interests}i/{votes}v/{donations}d)"
-                      f" → {target_name!r} (id={target_id})")
-
-                if not args.dry_run:
-                    with conn.cursor() as cur:
-                        if interests:
-                            cur.execute(
-                                "UPDATE interests SET politician_id = %s WHERE politician_id = %s",
-                                (target_id, stub_id),
-                            )
-                        if votes:
-                            cur.execute(
-                                "UPDATE votes SET politician_id = %s WHERE politician_id = %s",
-                                (target_id, stub_id),
-                            )
-                        if donations:
-                            cur.execute(
-                                "UPDATE donations SET recipient_politician_id = %s "
-                                "WHERE recipient_politician_id = %s",
-                                (target_id, stub_id),
-                            )
-                        cur.execute("DELETE FROM politicians WHERE id = %s", (stub_id,))
-                    conn.commit()
+                merge_records(conn, stub_id, target_id, stub_name, target_name,
+                              interests, votes, donations, args.dry_run)
                 merged += 1
-
             elif len(matches) > 1:
                 ambiguous.append((stub_name, matches))
             else:
                 no_match.append(stub_name)
 
+        # ── Pass 2: merge "Last, First Middle" format stubs ──────────────────
+        # These arise from stale records before name normalisation was added.
+        # Convert "Joyce, Barnaby Thomas" → "Barnaby Joyce" and look for a match.
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT p.id, p.name,
+                    (SELECT COUNT(*) FROM interests WHERE politician_id = p.id) AS interests,
+                    (SELECT COUNT(*) FROM votes WHERE politician_id = p.id) AS votes,
+                    (SELECT COUNT(*) FROM donations WHERE recipient_politician_id = p.id) AS donations
+                FROM politicians p
+                WHERE p.name LIKE '%%,%%'
+                ORDER BY p.name
+            """)
+            comma_stubs = cur.fetchall()
+
+        for stub_id, stub_name, interests, votes, donations in comma_stubs:
+            parts = [p.strip() for p in stub_name.split(",", 1)]
+            if len(parts) != 2:
+                continue
+            last, given_full = parts
+            # given_full may be "Barnaby Thomas" — use only first given name for matching
+            first_given = given_full.split()[0] if given_full else ""
+            normalised = f"{given_full} {last}"  # "Barnaby Thomas Joyce"
+            first_last = f"{first_given} {last}"  # "Barnaby Joyce"
+
+            with conn.cursor() as cur:
+                # Try exact match on normalised full name first, then first+last
+                cur.execute(
+                    "SELECT id, name FROM politicians WHERE (LOWER(name) = LOWER(%s) OR LOWER(name) = LOWER(%s)) AND id != %s",
+                    (normalised, first_last, stub_id),
+                )
+                matches = cur.fetchall()
+
+            if len(matches) == 1:
+                target_id, target_name = matches[0]
+                merge_records(conn, stub_id, target_id, stub_name, target_name,
+                              interests, votes, donations, args.dry_run)
+                merged += 1
+            elif len(matches) > 1:
+                ambiguous.append((stub_name, matches))
+            elif interests + votes + donations == 0:
+                # No data and no match — safe to delete stale record
+                print(f"DELETE (empty, stale) {stub_name!r}")
+                if not args.dry_run:
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM politicians WHERE id = %s", (stub_id,))
+                    conn.commit()
+                merged += 1
+            else:
+                no_match.append(stub_name)
+
         print(f"\n{'='*60}")
-        print(f"Merged  : {merged}")
+        print(f"Merged/cleaned: {merged}")
         print(f"Skipped (no data): {skipped_empty}")
         if ambiguous:
             print(f"Ambiguous ({len(ambiguous)} — manual review needed):")

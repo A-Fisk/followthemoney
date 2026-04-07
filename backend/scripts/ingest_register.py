@@ -582,7 +582,7 @@ _OCR_ITEM_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 _HANGING_LINE = re.compile(
-    r"(?:,|-|\b(?:of|the|from|a|an|and|or|in|at|to|by|for|new|\d+))$",
+    r"(?:,|-|\b(?:of|the|from|a|an|and|or|in|at|to|by|for|new|\d+)|[A-Z]\.)$",
     re.IGNORECASE,
 )
 
