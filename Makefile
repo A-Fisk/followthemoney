@@ -24,6 +24,7 @@ help:
 	@echo "  make merge-politicians  Merge duplicate politician records"
 	@echo "  make merge-donors       Auto-merge unambiguous donor duplicates"
 	@echo "  make review-ambiguous   LLM review of ambiguous donor merges"
+	@echo "  make manual-review      Step through unresolved cases interactively"
 	@echo "  make apply-decisions    Apply LLM-reviewed merge decisions"
 	@echo ""
 	@echo "  make frontend           Install frontend deps + start dev server"
@@ -101,6 +102,9 @@ DECISIONS_FILE  = backend/decisions.json
 review-ambiguous: merge-donors
 	$(BACKEND) $(UV)/merge_donors.py --dry-run --export-ambiguous ambiguous.json
 	$(BACKEND) $(UV)/review_ambiguous.py ambiguous.json --output decisions.json
+
+manual-review:
+	$(BACKEND) $(UV)/review_ambiguous.py decisions.json --interactive
 
 apply-decisions:
 	$(BACKEND) $(UV)/merge_donors.py --apply-decisions decisions.json

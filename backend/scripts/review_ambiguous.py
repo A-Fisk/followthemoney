@@ -8,8 +8,11 @@ Workflow:
     # 1. Generate ambiguous cases file
     uv run scripts/merge_donors.py --dry-run --export-ambiguous ambiguous.json
 
-    # 2. Submit to LLM for review (writes decisions.json)
+    # 2a. LLM review (writes decisions.json, auto-approves high-confidence cases)
     uv run scripts/review_ambiguous.py ambiguous.json
+
+    # 2b. Interactive manual review (works on ambiguous.json or decisions.json)
+    uv run scripts/review_ambiguous.py decisions.json --interactive
 
     # 3. Apply decisions
     uv run scripts/merge_donors.py --apply-decisions decisions.json
@@ -18,6 +21,7 @@ Options:
     --output FILE      Where to write decisions (default: decisions.json)
     --confidence low|medium|high
                        Minimum confidence to mark as auto-apply (default: high)
+    --interactive      Step through unresolved cases one by one for manual review
     --dry-run          Print decisions without writing output file
 """
 
@@ -87,9 +91,115 @@ def review_case(name: str, candidates: list[str], reason: str) -> dict:
         }
 
 
+def interactive_review(decisions: list[dict], output_path: Path) -> list[dict]:
+    """
+    Step through cases that aren't yet approved, prompting for a decision.
+
+    Shows the LLM recommendation (if present) and waits for:
+      y  — merge (approve auto_apply, or set it if missing)
+      n  — don't merge (same_entity = false)
+      c  — choose canonical manually (prompts for which candidate to keep)
+      s  — skip for now (leave unchanged)
+      q  — quit and save progress
+
+    Saves the file after every answer so progress isn't lost on quit.
+    """
+    # Cases needing a decision: no auto_apply yet, or same_entity but not approved
+    pending = [
+        (i, d) for i, d in enumerate(decisions)
+        if not d.get("auto_apply")
+    ]
+    total_pending = len(pending)
+
+    if total_pending == 0:
+        print("No pending cases — all decisions already resolved.")
+        return decisions
+
+    print(f"\n{total_pending} cases need manual review.")
+    print("Keys: [y] merge  [n] skip/reject  [c] choose canonical  [s] skip later  [q] quit\n")
+
+    for step, (idx, d) in enumerate(pending, 1):
+        name       = d["name"]
+        candidates = d["candidates"]
+        reason     = d.get("reason", "")
+
+        # Header
+        print(f"── [{step}/{total_pending}] ──────────────────────────────────────────")
+        print(f"  Ambiguous : {name!r}")
+        print(f"  Candidates: {candidates}")
+        print(f"  Reason    : {reason}")
+
+        # Show LLM recommendation if present
+        if d.get("reasoning"):
+            verdict = "MERGE → " + repr(d["canonical"]) if d.get("same_entity") else "SKIP"
+            print(f"  LLM says  : {verdict}  [{d.get('confidence', '?')}]")
+            print(f"  Reasoning : {d['reasoning']}")
+
+        # Prompt
+        while True:
+            try:
+                key = input("\n  > ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                key = "q"
+
+            if key == "y":
+                # Use LLM canonical if available, else first candidate
+                if not d.get("canonical"):
+                    d["canonical"] = candidates[0]
+                d["same_entity"] = True
+                d["auto_apply"]  = True
+                print(f"  ✓ MERGE → {d['canonical']!r}")
+                break
+
+            elif key == "n":
+                d["same_entity"] = False
+                d["auto_apply"]  = False
+                print("  ✗ SKIP (will not merge)")
+                break
+
+            elif key == "c":
+                print("  Choose canonical:")
+                all_names = [name] + candidates
+                for j, n in enumerate(all_names):
+                    print(f"    {j}: {n!r}")
+                try:
+                    choice = int(input("  > ").strip())
+                    d["canonical"]   = all_names[choice]
+                    d["same_entity"] = True
+                    d["auto_apply"]  = True
+                    print(f"  ✓ MERGE → {d['canonical']!r}")
+                except (ValueError, IndexError):
+                    print("  Invalid choice — try again.")
+                    continue
+                break
+
+            elif key == "s":
+                print("  → Skipped (unchanged)")
+                break
+
+            elif key == "q":
+                print("\nQuitting — saving progress...")
+                decisions[idx] = d
+                output_path.write_text(json.dumps(decisions, indent=2))
+                print(f"Saved to {output_path}. Resume with --interactive.")
+                return decisions
+
+            else:
+                print("  Keys: y / n / c / s / q")
+                continue
+
+        decisions[idx] = d
+        # Save after every answer
+        output_path.write_text(json.dumps(decisions, indent=2))
+
+    approved = sum(1 for d in decisions if d.get("auto_apply"))
+    print(f"\nDone. {approved} merges approved total.")
+    return decisions
+
+
 def main():
     parser = argparse.ArgumentParser(description="LLM review of ambiguous donor merges")
-    parser.add_argument("input", help="ambiguous.json produced by merge_donors.py --export-ambiguous")
+    parser.add_argument("input", help="ambiguous.json or decisions.json")
     parser.add_argument("--output", default="decisions.json", help="Output file for decisions")
     parser.add_argument(
         "--confidence",
@@ -97,11 +207,40 @@ def main():
         default="high",
         help="Minimum confidence to flag as auto-apply (default: high)",
     )
+    parser.add_argument("--interactive", action="store_true",
+                        help="Step through unresolved cases for manual review")
     parser.add_argument("--dry-run", action="store_true", help="Print decisions, don't write file")
     args = parser.parse_args()
 
-    cases = json.loads(Path(args.input).read_text())
+    raw = json.loads(Path(args.input).read_text())
+    output_path = Path(args.output)
+
+    # ── Interactive-only mode: input is already a decisions file ──────────────
+    # Detected by presence of "auto_apply" key in first entry.
+    if args.interactive and raw and "auto_apply" in raw[0]:
+        decisions = raw
+        decisions = interactive_review(decisions, output_path)
+        if not args.dry_run:
+            output_path.write_text(json.dumps(decisions, indent=2))
+            print(f"Saved to {output_path}")
+        return
+
+    cases = raw
     total = len(cases)
+
+    if args.interactive and not any("auto_apply" in c for c in cases):
+        # Pure interactive mode on ambiguous.json — skip LLM entirely
+        decisions = [
+            {**c, "same_entity": False, "canonical": None,
+             "confidence": "unreviewed", "reasoning": "", "auto_apply": False}
+            for c in cases
+        ]
+        decisions = interactive_review(decisions, output_path)
+        if not args.dry_run:
+            output_path.write_text(json.dumps(decisions, indent=2))
+            print(f"Saved to {output_path}")
+        return
+
     print(f"Reviewing {total} ambiguous cases using {LLM_MODEL}...")
     print(f"Auto-apply threshold: confidence >= {args.confidence}\n")
 
@@ -155,9 +294,18 @@ def main():
     print(f"Manual review : {total - auto_merge - skip - errors}")
 
     if not args.dry_run:
-        Path(args.output).write_text(json.dumps(decisions, indent=2))
-        print(f"\nDecisions written to {args.output}")
-        print(f"Apply with: uv run scripts/merge_donors.py --apply-decisions {args.output}")
+        output_path.write_text(json.dumps(decisions, indent=2))
+        print(f"\nDecisions written to {output_path}")
+        if args.interactive:
+            # Drop straight into manual review for anything the LLM didn't auto-approve
+            decisions = interactive_review(decisions, output_path)
+            output_path.write_text(json.dumps(decisions, indent=2))
+        else:
+            print(f"Apply with: uv run scripts/merge_donors.py --apply-decisions {output_path}")
+            pending = sum(1 for d in decisions if not d.get("auto_apply"))
+            if pending:
+                print(f"Tip: {pending} cases need manual review —"
+                      f" run with --interactive to step through them.")
     else:
         print("\n(dry run — no output file written)")
 
