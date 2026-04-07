@@ -1,5 +1,5 @@
 .PHONY: help up down db-wait ingest-aec enrich-abr ingest-register ingest-tvfy \
-        merge-politicians merge-donors review-ambiguous apply-decisions \
+        merge-politicians merge-parties merge-donors review-ambiguous apply-decisions \
         ingest-all frontend dev
 
 BACKEND = cd backend &&
@@ -22,6 +22,7 @@ help:
 	@echo "  make ingest-register    Register of Interests (House PDF + Senate API)"
 	@echo "  make ingest-tvfy        They Vote For You voting records (full history)"
 	@echo "  make merge-politicians  Merge duplicate politician records"
+	@echo "  make merge-parties      Normalise duplicate party name variants"
 	@echo "  make merge-donors       Auto-merge unambiguous donor duplicates"
 	@echo "  make review-ambiguous   LLM review of ambiguous donor merges"
 	@echo "  make manual-review      Step through unresolved cases interactively"
@@ -92,6 +93,9 @@ ingest-tvfy:
 merge-politicians:
 	$(BACKEND) $(UV)/merge_politicians.py
 
+merge-parties:
+	$(BACKEND) $(UV)/merge_parties.py
+
 merge-donors:
 	$(BACKEND) $(UV)/merge_donors.py
 
@@ -112,7 +116,7 @@ apply-decisions:
 # ── Full pipeline ──────────────────────────────────────────────────────────────
 
 ingest-all: up db-wait ingest-aec enrich-abr ingest-register ingest-tvfy \
-            merge-politicians merge-donors
+            merge-politicians merge-parties merge-donors
 	@echo ""
 	@echo "Pipeline complete."
 	@echo "Optional: run 'make review-ambiguous' to resolve ~1,300 ambiguous donor merges with LLM."

@@ -81,6 +81,7 @@ Services:
 │   │   ├── ingest_register.py   # Register of Interests (House PDF + Senate API)
 │   │   ├── ingest_tvfy.py       # They Vote For You voting records
 │   │   ├── merge_politicians.py # Merge duplicate politician records
+│   │   ├── merge_parties.py     # Normalize duplicate party name variants
 │   │   ├── merge_donors.py      # Merge duplicate donor records (3 passes)
 │   │   ├── review_ambiguous.py  # LLM-assisted review of ambiguous donor merges
 │   │   └── llm_client.py        # Shared LLM client (Anthropic or Ollama via .env)
@@ -195,6 +196,19 @@ uv run scripts/merge_donors.py --apply-decisions decisions.json
 ```
 
 Interactive review keys: `y` merge · `n` reject · `c` choose canonical · `s` skip · `q` quit and save. Progress is saved after every answer so you can quit and resume safely.
+
+Party name variants (e.g. `Australian Labor Party (N.S.W. Branch)` vs `Australian Labor Party (NSW Branch)`, or AEC artefact suffixes like `- NSW`):
+
+```bash
+uv run scripts/merge_parties.py           # preview
+uv run scripts/merge_parties.py --dry-run # same, explicit
+```
+
+Two passes run automatically:
+1. **Suffix strip** — removes ` - ACT/NSW/NT/QLD/SA/TAS/VIC/WA/NATIONAL` artefacts
+2. **Canonical map** — applies a hardcoded variant→canonical mapping for known abbreviation/spelling differences
+
+To add mappings for other parties (Liberal, Greens, etc.), extend the `CANONICAL_MAP` dict in `scripts/merge_parties.py`.
 
 Politician duplicates (e.g. stubs from PDF slugs vs full TVFY names):
 

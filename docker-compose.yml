@@ -25,6 +25,7 @@ services:
     volumes:
       - ./backend:/app
       - ./data:/data
+      - uv-cache:/root/.cache/uv
     depends_on:
       - db
     command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
@@ -45,3 +46,4 @@ services:
 
 volumes:
   pgdata:
+  uv-cache:

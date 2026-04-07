@@ -1,8 +1,18 @@
 import React from "react";
 import { notFound } from "next/navigation";
-import { fetchPolitician, VoteRow, PolicyPosition } from "../../lib/api";
+import {
+  fetchPolitician,
+  VoteRow,
+  PolicyPosition,
+  TopDonorRow,
+  DonationRow,
+  PartyBranchDonation,
+  AsDonorDonation,
+  InterestRow,
+} from "../../lib/api";
 
-// Australian federal parliaments covered by TVFY
+// ── Parliament ranges ─────────────────────────────────────────────────────────
+
 const PARLIAMENTS: { number: number; start: string; end: string | null }[] = [
   { number: 47, start: "2022-07-26", end: null },
   { number: 46, start: "2019-07-02", end: "2022-07-25" },
@@ -16,21 +26,121 @@ const PARLIAMENTS: { number: number; start: string; end: string | null }[] = [
 function voteParliament(voteDate: string | null): number | null {
   if (!voteDate) return null;
   for (const p of PARLIAMENTS) {
-    if (voteDate >= p.start && (p.end === null || voteDate <= p.end)) {
-      return p.number;
-    }
+    if (voteDate >= p.start && (p.end === null || voteDate <= p.end)) return p.number;
   }
   return null;
 }
 
-function buildUrl(params: Record<string, string | undefined>): string {
+// ── Sort types ────────────────────────────────────────────────────────────────
+
+type PtdSort  = "donor"  | "industry" | "total";
+type IntSort  = "description" | "provider" | "received" | "declared" | "days_late";
+type DdSort   = "year"   | "amount"   | "donor"  | "industry";
+type VpbSort  = "year"   | "amount"   | "donor"  | "branch";
+type DmSort   = "year"   | "amount"   | "donor"  | "recipient";
+type VoteSort = "date"   | "vote"     | "issue";
+
+function sortTopDonors(rows: TopDonorRow[], s: PtdSort): TopDonorRow[] {
+  return [...rows].sort((a, b) => {
+    if (s === "donor")    return a.donor.name.localeCompare(b.donor.name);
+    if (s === "industry") return (a.donor.industry_label ?? "").localeCompare(b.donor.industry_label ?? "");
+    return b.total - a.total;
+  });
+}
+
+function sortInterests(rows: InterestRow[], s: IntSort): InterestRow[] {
+  return [...rows].sort((a, b) => {
+    if (s === "description") return (a.description ?? "").localeCompare(b.description ?? "");
+    if (s === "provider")    return (a.donor?.name ?? "").localeCompare(b.donor?.name ?? "");
+    if (s === "received")    return (b.date_received ?? "").localeCompare(a.date_received ?? "");
+    if (s === "days_late")   return (b.days_late ?? 0) - (a.days_late ?? 0);
+    return (b.date_declared ?? "").localeCompare(a.date_declared ?? ""); // declared (default)
+  });
+}
+
+function sortDonations(rows: DonationRow[], s: DdSort): DonationRow[] {
+  return [...rows].sort((a, b) => {
+    if (s === "amount")   return b.amount - a.amount;
+    if (s === "donor")    return (a.donor?.name ?? "").localeCompare(b.donor?.name ?? "");
+    if (s === "industry") return (a.donor?.industry_label ?? "").localeCompare(b.donor?.industry_label ?? "");
+    return (b.financial_year ?? "").localeCompare(a.financial_year ?? ""); // year (default)
+  });
+}
+
+function sortViaBranch(rows: PartyBranchDonation[], s: VpbSort): PartyBranchDonation[] {
+  return [...rows].sort((a, b) => {
+    if (s === "amount") return b.amount - a.amount;
+    if (s === "donor")  return (a.donor?.name ?? "").localeCompare(b.donor?.name ?? "");
+    if (s === "branch") return (a.party_name ?? "").localeCompare(b.party_name ?? "");
+    return (b.financial_year ?? "").localeCompare(a.financial_year ?? "");
+  });
+}
+
+function sortAsDonor(rows: AsDonorDonation[], s: DmSort): AsDonorDonation[] {
+  return [...rows].sort((a, b) => {
+    if (s === "amount")    return b.amount - a.amount;
+    if (s === "donor")     return (a.donor_name ?? "").localeCompare(b.donor_name ?? "");
+    if (s === "recipient") {
+      const rA = a.recipient_party_name ?? a.recipient_politician_name ?? "";
+      const rB = b.recipient_party_name ?? b.recipient_politician_name ?? "";
+      return rA.localeCompare(rB);
+    }
+    return (b.financial_year ?? "").localeCompare(a.financial_year ?? "");
+  });
+}
+
+function sortVotes(votes: VoteRow[], sort: VoteSort): VoteRow[] {
+  return [...votes].sort((a, b) => {
+    if (sort === "vote")  return (a.vote_direction ?? "").localeCompare(b.vote_direction ?? "");
+    if (sort === "issue") return (a.issue_tags?.[0] ?? "zzz").localeCompare(b.issue_tags?.[0] ?? "zzz");
+    return (b.vote_date ?? "").localeCompare(a.vote_date ?? "");
+  });
+}
+
+// ── URL helpers ───────────────────────────────────────────────────────────────
+
+function buildUrl(
+  current: Record<string, string | undefined>,
+  overrides: Record<string, string | undefined>
+): string {
+  const merged = { ...current, ...overrides };
   const p = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
+  for (const [k, v] of Object.entries(merged)) {
     if (v) p.set(k, v);
   }
   const s = p.toString();
   return s ? `?${s}` : "?";
 }
+
+// ── Sort header helper ────────────────────────────────────────────────────────
+
+function SortTh({
+  label,
+  sortKey,
+  current,
+  href,
+  right,
+}: {
+  label: string;
+  sortKey: string;
+  current: string;
+  href: string;
+  right?: boolean;
+}) {
+  const active = current === sortKey;
+  return (
+    <th className={`py-2 pr-4 ${right ? "text-right" : ""}`}>
+      <a
+        href={href}
+        className={active ? "font-semibold text-gray-800" : "text-gray-500 hover:text-gray-700"}
+      >
+        {label}{active ? " ↓" : ""}
+      </a>
+    </th>
+  );
+}
+
+// ── Vote policy display ───────────────────────────────────────────────────────
 
 function policyStance(positions: PolicyPosition[], voteDirection: string): React.ReactNode {
   return (
@@ -55,41 +165,34 @@ function tvfyUrl(v: VoteRow): string | null {
   return null;
 }
 
-type VoteSort = "date" | "vote" | "issue";
-
-function sortVotes(votes: VoteRow[], sort: VoteSort): VoteRow[] {
-  return [...votes].sort((a, b) => {
-    if (sort === "date") {
-      return (b.vote_date ?? "").localeCompare(a.vote_date ?? "");
-    }
-    if (sort === "vote") {
-      return (a.vote_direction ?? "").localeCompare(b.vote_direction ?? "");
-    }
-    // issue: sort by first tag
-    const ta = a.issue_tags?.[0] ?? "zzz";
-    const tb = b.issue_tags?.[0] ?? "zzz";
-    return ta.localeCompare(tb);
-  });
-}
+// ── Page ──────────────────────────────────────────────────────────────────────
 
 export default async function PoliticianPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ sort?: string; parliament?: string }>;
+  searchParams: Promise<{
+    sort?: string; parliament?: string;
+    ptd?: string; int?: string; dd?: string; vpb?: string; dm?: string;
+  }>;
 }) {
   const { id } = await params;
-  const { sort, parliament } = await searchParams;
-  const voteSort: VoteSort = sort === "vote" || sort === "issue" ? sort : "date";
-  const selectedParliament = parliament ? Number(parliament) : null;
+  const { sort, parliament, ptd, int: intParam, dd, vpb, dm } = await searchParams;
+
+  const voteSort:   VoteSort = sort === "vote" || sort === "issue" ? sort : "date";
+  const ptdSort:    PtdSort  = ptd === "donor" || ptd === "industry" ? ptd : "total";
+  const intSort:    IntSort  = intParam === "description" || intParam === "provider" || intParam === "received" || intParam === "days_late" ? intParam : "declared";
+  const ddSort:     DdSort   = dd === "amount" || dd === "donor" || dd === "industry" ? dd : "year";
+  const vpbSort:    VpbSort  = vpb === "amount" || vpb === "donor" || vpb === "branch" ? vpb : "year";
+  const dmSort:     DmSort   = dm === "amount" || dm === "donor" || dm === "recipient" ? dm : "year";
+  const selectedParliament   = parliament ? Number(parliament) : null;
 
   const pol = await fetchPolitician(id);
   if (!pol) notFound();
 
   const chamberLabel = pol.chamber === "house" ? "House of Representatives" : pol.chamber === "senate" ? "Senate" : null;
 
-  // Determine which parliaments this politician has votes in
   const parliamentsWithVotes = [
     ...new Set(pol.votes.map((v) => voteParliament(v.vote_date)).filter((n): n is number => n !== null)),
   ].sort((a, b) => b - a);
@@ -98,7 +201,15 @@ export default async function PoliticianPage({
     ? pol.votes.filter((v) => voteParliament(v.vote_date) === selectedParliament)
     : pol.votes;
 
-  const sortedVotes = sortVotes(filteredVotes, voteSort);
+  // All current params — passed to buildUrl so every sort link preserves the others
+  const cp = { sort, parliament, ptd, int: intParam, dd, vpb, dm };
+
+  const topDonors     = sortTopDonors(pol.party_top_donors, ptdSort);
+  const interests     = sortInterests(pol.interests, intSort);
+  const directDons    = sortDonations(pol.direct_donations, ddSort);
+  const viaBranchDons = sortViaBranch(pol.via_party_donations, vpbSort);
+  const asDonorDons   = sortAsDonor(pol.as_donor_donations, dmSort);
+  const sortedVotes   = sortVotes(filteredVotes, voteSort);
 
   return (
     <div className="space-y-8">
@@ -121,7 +232,7 @@ export default async function PoliticianPage({
       </div>
 
       {/* Party top donors */}
-      {pol.party && pol.party_top_donors.length > 0 && (
+      {pol.party && topDonors.length > 0 && (
         <section>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="font-semibold text-gray-900">
@@ -138,15 +249,15 @@ export default async function PoliticianPage({
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
-                <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
-                  <th className="py-2 pr-4">#</th>
-                  <th className="py-2 pr-4">Donor</th>
-                  <th className="py-2 pr-4">Industry</th>
-                  <th className="py-2 text-right">Total donated</th>
+                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                  <th className="py-2 pr-4 text-gray-500">#</th>
+                  <SortTh label="Donor"    sortKey="donor"    current={ptdSort} href={buildUrl(cp, { ptd: "donor" })} />
+                  <SortTh label="Industry" sortKey="industry" current={ptdSort} href={buildUrl(cp, { ptd: "industry" })} />
+                  <SortTh label="Total donated" sortKey="total" current={ptdSort} href={buildUrl(cp, { ptd: "total" })} right />
                 </tr>
               </thead>
               <tbody>
-                {pol.party_top_donors.map((d, i) => (
+                {topDonors.map((d, i) => (
                   <tr key={d.donor.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="py-2 pr-4 text-gray-400 tabular-nums">{i + 1}</td>
                     <td className="py-2 pr-4">
@@ -178,17 +289,17 @@ export default async function PoliticianPage({
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
-                <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
-                  <th className="py-2 pr-4">Description</th>
-                  <th className="py-2 pr-4">Provider</th>
-                  <th className="py-2 pr-4">Received</th>
-                  <th className="py-2 pr-4">Declared</th>
-                  <th className="py-2 pr-4">Days late</th>
-                  <th className="py-2">Source</th>
+                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                  <SortTh label="Description" sortKey="description" current={intSort} href={buildUrl(cp, { int: "description" })} />
+                  <SortTh label="Provider"    sortKey="provider"    current={intSort} href={buildUrl(cp, { int: "provider" })} />
+                  <SortTh label="Received"    sortKey="received"    current={intSort} href={buildUrl(cp, { int: "received" })} />
+                  <SortTh label="Declared"    sortKey="declared"    current={intSort} href={buildUrl(cp, { int: "declared" })} />
+                  <SortTh label="Days late"   sortKey="days_late"   current={intSort} href={buildUrl(cp, { int: "days_late" })} right />
+                  <th className="py-2 text-gray-500 uppercase tracking-wide text-xs">Source</th>
                 </tr>
               </thead>
               <tbody>
-                {pol.interests.map((i) => (
+                {interests.map((i) => (
                   <tr key={i.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="py-2 pr-4 max-w-xs text-xs leading-snug">{i.description || "—"}</td>
                     <td className="py-2 pr-4 text-xs">
@@ -200,7 +311,7 @@ export default async function PoliticianPage({
                     </td>
                     <td className="py-2 pr-4 text-xs tabular-nums">{i.date_received || "—"}</td>
                     <td className="py-2 pr-4 text-xs tabular-nums">{i.date_declared || "—"}</td>
-                    <td className="py-2 pr-4 text-xs">
+                    <td className="py-2 pr-4 text-xs text-right">
                       {i.days_late != null ? (
                         <span className={i.days_late > 0 ? "text-red-600 font-medium" : "text-gray-500"}>
                           {i.days_late > 0 ? `+${i.days_late}` : i.days_late}
@@ -226,9 +337,7 @@ export default async function PoliticianPage({
         <div className="mb-3 flex items-center justify-between">
           <h2 className="font-semibold text-gray-900">
             Direct donations received{" "}
-            <span className="font-normal text-gray-400 text-sm">
-              ({pol.direct_donations.length})
-            </span>
+            <span className="font-normal text-gray-400 text-sm">({pol.direct_donations.length})</span>
           </h2>
           {pol.direct_donations.length > 0 && (
             <a
@@ -247,16 +356,16 @@ export default async function PoliticianPage({
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
-                <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
-                  <th className="py-2 pr-4">Year</th>
-                  <th className="py-2 pr-4 text-right">Amount</th>
-                  <th className="py-2 pr-4">Donor</th>
-                  <th className="py-2 pr-4">Industry</th>
-                  <th className="py-2">Source</th>
+                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                  <SortTh label="Year"     sortKey="year"     current={ddSort} href={buildUrl(cp, { dd: "year" })} />
+                  <SortTh label="Amount"   sortKey="amount"   current={ddSort} href={buildUrl(cp, { dd: "amount" })} right />
+                  <SortTh label="Donor"    sortKey="donor"    current={ddSort} href={buildUrl(cp, { dd: "donor" })} />
+                  <SortTh label="Industry" sortKey="industry" current={ddSort} href={buildUrl(cp, { dd: "industry" })} />
+                  <th className="py-2 text-gray-500 uppercase tracking-wide text-xs">Source</th>
                 </tr>
               </thead>
               <tbody>
-                {pol.direct_donations.map((d) => (
+                {directDons.map((d) => (
                   <tr key={d.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="py-2 pr-4">{d.financial_year}</td>
                     <td className="py-2 pr-4 text-right tabular-nums">
@@ -269,9 +378,7 @@ export default async function PoliticianPage({
                         </a>
                       ) : "—"}
                     </td>
-                    <td className="py-2 pr-4 text-gray-500 text-xs">
-                      {d.donor?.industry_label || "—"}
-                    </td>
+                    <td className="py-2 pr-4 text-gray-500 text-xs">{d.donor?.industry_label || "—"}</td>
                     <td className="py-2">
                       {d.source_url ? (
                         <a href={d.source_url} target="_blank" rel="noopener noreferrer"
@@ -296,16 +403,16 @@ export default async function PoliticianPage({
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
-                <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
-                  <th className="py-2 pr-4">Year</th>
-                  <th className="py-2 pr-4 text-right">Amount</th>
-                  <th className="py-2 pr-4">Donor</th>
-                  <th className="py-2 pr-4">Party branch</th>
-                  <th className="py-2">Source</th>
+                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                  <SortTh label="Year"         sortKey="year"   current={vpbSort} href={buildUrl(cp, { vpb: "year" })} />
+                  <SortTh label="Amount"        sortKey="amount" current={vpbSort} href={buildUrl(cp, { vpb: "amount" })} right />
+                  <SortTh label="Donor"         sortKey="donor"  current={vpbSort} href={buildUrl(cp, { vpb: "donor" })} />
+                  <SortTh label="Party branch"  sortKey="branch" current={vpbSort} href={buildUrl(cp, { vpb: "branch" })} />
+                  <th className="py-2 text-gray-500 uppercase tracking-wide text-xs">Source</th>
                 </tr>
               </thead>
               <tbody>
-                {pol.via_party_donations.map((d) => (
+                {viaBranchDons.map((d) => (
                   <tr key={d.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="py-2 pr-4">{d.financial_year}</td>
                     <td className="py-2 pr-4 text-right tabular-nums">
@@ -345,16 +452,16 @@ export default async function PoliticianPage({
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
-                <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
-                  <th className="py-2 pr-4">Year</th>
-                  <th className="py-2 pr-4 text-right">Amount</th>
-                  <th className="py-2 pr-4">Donor name</th>
-                  <th className="py-2 pr-4">Recipient</th>
-                  <th className="py-2">Source</th>
+                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                  <SortTh label="Year"       sortKey="year"      current={dmSort} href={buildUrl(cp, { dm: "year" })} />
+                  <SortTh label="Amount"     sortKey="amount"    current={dmSort} href={buildUrl(cp, { dm: "amount" })} right />
+                  <SortTh label="Donor name" sortKey="donor"     current={dmSort} href={buildUrl(cp, { dm: "donor" })} />
+                  <SortTh label="Recipient"  sortKey="recipient" current={dmSort} href={buildUrl(cp, { dm: "recipient" })} />
+                  <th className="py-2 text-gray-500 uppercase tracking-wide text-xs">Source</th>
                 </tr>
               </thead>
               <tbody>
-                {pol.as_donor_donations.map((d) => (
+                {asDonorDons.map((d) => (
                   <tr key={d.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="py-2 pr-4">{d.financial_year}</td>
                     <td className="py-2 pr-4 text-right tabular-nums">
@@ -395,25 +502,11 @@ export default async function PoliticianPage({
               ({filteredVotes.length}{selectedParliament ? ` in ${selectedParliament}th Parliament` : ` of ${pol.votes.length}`})
             </span>
           </h2>
-          {pol.votes.length > 0 && (
-            <span className="text-xs text-gray-400">
-              Sort:{" "}
-              {(["date", "vote", "issue"] as VoteSort[]).map((s) => (
-                <a
-                  key={s}
-                  href={buildUrl({ sort: s, parliament: parliament })}
-                  className={`mr-2 ${voteSort === s ? "font-semibold text-gray-700" : "text-blue-600 hover:underline"}`}
-                >
-                  {s}
-                </a>
-              ))}
-            </span>
-          )}
         </div>
         {parliamentsWithVotes.length > 1 && (
           <div className="mb-3 flex flex-wrap gap-1 text-xs">
             <a
-              href={buildUrl({ sort: voteSort !== "date" ? voteSort : undefined })}
+              href={buildUrl(cp, { parliament: undefined })}
               className={`rounded px-2 py-1 ${!selectedParliament ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
             >
               All
@@ -421,7 +514,7 @@ export default async function PoliticianPage({
             {parliamentsWithVotes.map((p) => (
               <a
                 key={p}
-                href={buildUrl({ sort: voteSort !== "date" ? voteSort : undefined, parliament: String(p) })}
+                href={buildUrl(cp, { parliament: String(p) })}
                 className={`rounded px-2 py-1 ${selectedParliament === p ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
               >
                 {p}th
@@ -437,11 +530,11 @@ export default async function PoliticianPage({
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
-                <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
-                  <th className="py-2 pr-4">Date</th>
-                  <th className="py-2 pr-4">Vote</th>
-                  <th className="py-2 pr-4">Bill / Motion</th>
-                  <th className="py-2">Issues</th>
+                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                  <SortTh label="Date"         sortKey="date"  current={voteSort} href={buildUrl(cp, { sort: "date" })} />
+                  <SortTh label="Vote"         sortKey="vote"  current={voteSort} href={buildUrl(cp, { sort: "vote" })} />
+                  <th className="py-2 pr-4 text-gray-500">Bill / Motion</th>
+                  <SortTh label="Issues"       sortKey="issue" current={voteSort} href={buildUrl(cp, { sort: "issue" })} />
                 </tr>
               </thead>
               <tbody>
@@ -463,12 +556,8 @@ export default async function PoliticianPage({
                       </td>
                       <td className="py-2 pr-4 max-w-sm text-xs leading-snug">
                         {link ? (
-                          <a
-                            href={link}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:underline"
-                          >
+                          <a href={link} target="_blank" rel="noopener noreferrer"
+                             className="text-blue-600 hover:underline">
                             {v.bill_title}
                           </a>
                         ) : v.bill_title}
