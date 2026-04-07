@@ -827,8 +827,25 @@ def main():
         with conn:
             with conn.cursor() as cur:
                 if not args.no_clear:
-                    print("Clearing existing interests data ...")
-                    cur.execute("TRUNCATE interests RESTART IDENTITY")
+                    # Only clear interests for the chamber(s) being re-ingested,
+                    # so --house doesn't wipe senate data and vice-versa.
+                    if do_senate and do_house:
+                        print("Clearing all interests data ...")
+                        cur.execute("TRUNCATE interests RESTART IDENTITY")
+                    elif do_senate:
+                        print("Clearing senate interests data ...")
+                        cur.execute("""
+                            DELETE FROM interests WHERE politician_id IN (
+                                SELECT id FROM politicians WHERE chamber = 'senate'
+                            )
+                        """)
+                    elif do_house:
+                        print("Clearing house interests data ...")
+                        cur.execute("""
+                            DELETE FROM interests WHERE politician_id IN (
+                                SELECT id FROM politicians WHERE chamber = 'house'
+                            )
+                        """)
                     _politician_cache.clear()
                     _donor_cache.clear()
 
