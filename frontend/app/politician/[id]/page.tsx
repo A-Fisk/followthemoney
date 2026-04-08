@@ -173,12 +173,12 @@ export default async function PoliticianPage({
 }: {
   params: Promise<{ id: string }>;
   searchParams: Promise<{
-    sort?: string; parliament?: string;
+    sort?: string; parliament?: string; issue?: string; from?: string; to?: string;
     ptd?: string; int?: string; dd?: string; vpb?: string; dm?: string;
   }>;
 }) {
   const { id } = await params;
-  const { sort, parliament, ptd, int: intParam, dd, vpb, dm } = await searchParams;
+  const { sort, parliament, issue, from, to, ptd, int: intParam, dd, vpb, dm } = await searchParams;
 
   const voteSort:   VoteSort = sort === "vote" || sort === "issue" ? sort : "date";
   const ptdSort:    PtdSort  = ptd === "donor" || ptd === "industry" ? ptd : "total";
@@ -187,6 +187,9 @@ export default async function PoliticianPage({
   const vpbSort:    VpbSort  = vpb === "amount" || vpb === "donor" || vpb === "branch" ? vpb : "year";
   const dmSort:     DmSort   = dm === "amount" || dm === "donor" || dm === "recipient" ? dm : "year";
   const selectedParliament   = parliament ? Number(parliament) : null;
+  const selectedIssue        = issue ?? null;
+  const selectedFrom         = from ?? null;
+  const selectedTo           = to ?? null;
 
   const pol = await fetchPolitician(id);
   if (!pol) notFound();
@@ -197,12 +200,22 @@ export default async function PoliticianPage({
     ...new Set(pol.votes.map((v) => voteParliament(v.vote_date)).filter((n): n is number => n !== null)),
   ].sort((a, b) => b - a);
 
-  const filteredVotes = selectedParliament
-    ? pol.votes.filter((v) => voteParliament(v.vote_date) === selectedParliament)
-    : pol.votes;
+  const filteredVotes = pol.votes
+    .filter((v) => !selectedParliament || voteParliament(v.vote_date) === selectedParliament)
+    .filter((v) => !selectedIssue || v.issue_tags?.includes(selectedIssue))
+    .filter((v) => !selectedFrom || (v.vote_date ?? "") >= `${selectedFrom}-01-01`)
+    .filter((v) => !selectedTo   || (v.vote_date ?? "") <= `${selectedTo}-12-31`);
+
+  const allIssueTags = [...new Set(
+    pol.votes.flatMap((v) => v.issue_tags ?? [])
+  )].sort();
+
+  const allVoteYears = [...new Set(
+    pol.votes.map((v) => v.vote_date?.slice(0, 4)).filter((y): y is string => !!y)
+  )].sort();
 
   // All current params — passed to buildUrl so every sort link preserves the others
-  const cp = { sort, parliament, ptd, int: intParam, dd, vpb, dm };
+  const cp = { sort, parliament, issue, from, to, ptd, int: intParam, dd, vpb, dm };
 
   const topDonors     = sortTopDonors(pol.party_top_donors, ptdSort);
   const interests     = sortInterests(pol.interests, intSort);
@@ -499,12 +512,13 @@ export default async function PoliticianPage({
           <h2 className="font-semibold text-gray-900">
             Voting record{" "}
             <span className="font-normal text-gray-400 text-sm">
-              ({filteredVotes.length}{selectedParliament ? ` in ${selectedParliament}th Parliament` : ` of ${pol.votes.length}`})
+              ({filteredVotes.length}{(selectedParliament || selectedIssue || selectedFrom || selectedTo) ? ` of ${pol.votes.length} filtered` : ""})
             </span>
           </h2>
         </div>
         {parliamentsWithVotes.length > 1 && (
           <div className="mb-3 flex flex-wrap gap-1 text-xs">
+            <span className="py-1 text-gray-400 mr-1">Parliament</span>
             <a
               href={buildUrl(cp, { parliament: undefined })}
               className={`rounded px-2 py-1 ${!selectedParliament ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
@@ -521,6 +535,59 @@ export default async function PoliticianPage({
               </a>
             ))}
           </div>
+        )}
+        {allIssueTags.length > 0 && (
+          <form method="GET" className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+            {Object.entries(cp).filter(([k, v]) => v && k !== "issue").map(([k, v]) => (
+              <input key={k} type="hidden" name={k} value={v} />
+            ))}
+            <span className="text-gray-400">Issue</span>
+            <select name="issue" defaultValue={selectedIssue ?? ""}
+              className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+              <option value="">All</option>
+              {allIssueTags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+            </select>
+            <button type="submit"
+              className="rounded px-2 py-1 bg-gray-800 text-white hover:bg-gray-700">
+              Apply
+            </button>
+            {selectedIssue && (
+              <a href={buildUrl(cp, { issue: undefined })}
+                className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
+                Clear
+              </a>
+            )}
+          </form>
+        )}
+        {allVoteYears.length > 1 && (
+          <form method="GET" className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+            {/* Preserve all other params as hidden inputs */}
+            {Object.entries(cp).filter(([k, v]) => v && k !== "from" && k !== "to").map(([k, v]) => (
+              <input key={k} type="hidden" name={k} value={v} />
+            ))}
+            <span className="text-gray-400">Date</span>
+            <select name="from" defaultValue={selectedFrom ?? ""}
+              className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+              <option value="">From</option>
+              {allVoteYears.map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <span className="text-gray-400">to</span>
+            <select name="to" defaultValue={selectedTo ?? ""}
+              className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+              <option value="">To</option>
+              {[...allVoteYears].reverse().map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <button type="submit"
+              className="rounded px-2 py-1 bg-gray-800 text-white hover:bg-gray-700">
+              Apply
+            </button>
+            {(selectedFrom || selectedTo) && (
+              <a href={buildUrl(cp, { from: undefined, to: undefined })}
+                className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
+                Clear
+              </a>
+            )}
+          </form>
         )}
         {pol.votes.length === 0 ? (
           <p className="text-sm text-gray-400">No voting record on file.</p>
