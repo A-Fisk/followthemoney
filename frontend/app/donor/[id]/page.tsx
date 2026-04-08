@@ -105,13 +105,33 @@ export default async function DonorPage({
     donor.donations.map((d) => d.financial_year).filter((y): y is string => !!y)
   )].sort();
 
+  // Convert financial year "YYYY-YY" to start/end ISO dates for gifts filtering
+  const fyStart = from ? `${from.split("-")[0]}-07-01` : null;
+  const fyEnd   = to   ? `${parseInt(to.split("-")[0]) + 1}-06-30` : null;
+
   const filteredDonations = donor.donations
     .filter((d) => !from || !d.financial_year || d.financial_year >= from)
     .filter((d) => !to   || !d.financial_year || d.financial_year <= to);
 
+  // Re-aggregate donations by party from filtered set
+  const byPartyMap = new Map<number, PartyTotalRow>();
+  for (const d of filteredDonations) {
+    if (!d.party) continue;
+    const entry = byPartyMap.get(d.party.id) ?? { party: d.party, total: 0 };
+    entry.total += d.amount;
+    byPartyMap.set(d.party.id, entry);
+  }
+  const filteredByParty = (from || to)
+    ? [...byPartyMap.values()]
+    : donor.donations_by_party;
+
+  const filteredGifts = donor.interests
+    .filter((g) => !fyStart || !g.date_declared || g.date_declared >= fyStart)
+    .filter((g) => !fyEnd   || !g.date_declared || g.date_declared <= fyEnd);
+
   const sortedDonations = sortDonations(filteredDonations, donationSort);
-  const sortedByParty   = sortByParty(donor.donations_by_party, partySort);
-  const sortedGifts     = sortGifts(donor.interests, giftSort);
+  const sortedByParty   = sortByParty(filteredByParty, partySort);
+  const sortedGifts     = sortGifts(filteredGifts, giftSort);
 
   return (
     <div className="space-y-8">
@@ -183,7 +203,9 @@ export default async function DonorPage({
         <section>
           <h2 className="mb-3 font-semibold text-gray-900">
             Gifts & travel declared{" "}
-            <span className="font-normal text-gray-400 text-sm">({sortedGifts.length})</span>
+            <span className="font-normal text-gray-400 text-sm">
+              ({sortedGifts.length}{(from || to) ? ` of ${donor.interests.length} filtered` : ""})
+            </span>
           </h2>
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
@@ -232,7 +254,14 @@ export default async function DonorPage({
       {/* By party */}
       {sortedByParty.length > 0 && (
         <section>
-          <h2 className="mb-3 font-semibold text-gray-900">Donations by party</h2>
+          <h2 className="mb-3 font-semibold text-gray-900">
+            Donations by party{" "}
+            {(from || to) && (
+              <span className="font-normal text-gray-400 text-sm">
+                ({sortedByParty.length} of {donor.donations_by_party.length} filtered)
+              </span>
+            )}
+          </h2>
           <table className="w-full text-sm border-collapse">
             <thead>
               <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
