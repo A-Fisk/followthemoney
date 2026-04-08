@@ -54,11 +54,32 @@ def get_donor(id: int, format: str | None = None, db: Session = Depends(get_db))
     if not donor:
         raise HTTPException(status_code=404, detail="Donor not found")
 
-    # Total donated
+    # Total donated (AEC cash donations)
     total_row = db.execute(
         text("SELECT COALESCE(SUM(amount), 0) AS total FROM donations WHERE donor_id = :id"),
         {"id": id},
     ).mappings().first()
+
+    # Gifts declared in Register of Interests
+    interests_rows = db.execute(
+        text("""
+            SELECT i.id, i.description, i.value_approx, i.date_received,
+                   i.date_declared, i.days_late, i.source_url,
+                   pol.id AS politician_id, pol.name AS politician_name,
+                   pol.chamber, pol.electorate,
+                   pt.id AS party_id, pt.name AS party_name, pt.abbreviation
+            FROM interests i
+            JOIN politicians pol ON pol.id = i.politician_id
+            LEFT JOIN parties pt ON pt.id = pol.party_id
+            WHERE i.donor_id = :id
+            ORDER BY i.date_declared DESC NULLS LAST
+        """),
+        {"id": id},
+    ).mappings().all()
+
+    total_gifted = sum(
+        float(r["value_approx"]) for r in interests_rows if r["value_approx"] is not None
+    )
 
     # Donations by party (aggregated)
     by_party = db.execute(
@@ -120,6 +141,26 @@ def get_donor(id: int, format: str | None = None, db: Session = Depends(get_db))
         for r in by_party
     ]
 
+    interests_out = []
+    for r in interests_rows:
+        party = schemas.PartyMin(
+            id=r["party_id"], name=r["party_name"], abbreviation=r["abbreviation"]
+        ) if r["party_id"] else None
+        politician = schemas.PoliticianMin(
+            id=r["politician_id"], name=r["politician_name"],
+            chamber=r["chamber"], electorate=r["electorate"], party=party,
+        ) if r["politician_id"] else None
+        interests_out.append(schemas.DonorInterestRow(
+            id=r["id"],
+            description=r["description"],
+            value_approx=float(r["value_approx"]) if r["value_approx"] is not None else None,
+            date_received=r["date_received"],
+            date_declared=r["date_declared"],
+            days_late=r["days_late"],
+            source_url=r["source_url"],
+            politician=politician,
+        ))
+
     return schemas.DonorDetail(
         id=donor["id"],
         name=donor["name"],
@@ -131,6 +172,8 @@ def get_donor(id: int, format: str | None = None, db: Session = Depends(get_db))
         notes=donor["notes"],
         needs_review=donor["needs_review"],
         total_donated=float(total_row["total"]),
+        total_gifted=total_gifted,
         donations_by_party=donations_by_party,
         donations=donations_out,
+        interests=interests_out,
     )

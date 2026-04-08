@@ -28,7 +28,7 @@ import pdfplumber
 import psycopg2
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env", override=True)
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",

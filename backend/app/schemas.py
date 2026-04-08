@@ -182,6 +182,18 @@ class PartyDetail(BaseModel):
     expenditure: list[ExpenditureRow] = []
 
 
+class DonorInterestRow(BaseModel):
+    """Gift/travel declared in Register of Interests, from the donor's perspective."""
+    id: int
+    description: str | None = None
+    value_approx: float | None = None
+    date_received: date | None = None
+    date_declared: date | None = None
+    days_late: int | None = None
+    source_url: str | None = None
+    politician: PoliticianMin | None = None
+
+
 class DonorDetail(BaseModel):
     id: int
     name: str
@@ -192,9 +204,11 @@ class DonorDetail(BaseModel):
     controlling_person: str | None = None
     notes: str | None = None
     needs_review: bool = False
-    total_donated: float = 0.0
+    total_donated: float = 0.0   # AEC cash donations
+    total_gifted: float = 0.0    # Register of Interests value_approx sum
     donations_by_party: list[PartyTotalRow] = []
     donations: list[DonationByPartyRow] = []
+    interests: list[DonorInterestRow] = []
 
 
 # ── Search ─────────────────────────────────────────────────────────────────────

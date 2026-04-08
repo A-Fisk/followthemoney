@@ -17,14 +17,14 @@ Uses the OpenAI-compatible SDK which works against both endpoints.
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 from openai import OpenAI
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+_dotenv = dotenv_values(Path(__file__).resolve().parent.parent.parent / ".env")
 
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.anthropic.com/v1")
-LLM_API_KEY  = os.environ.get("LLM_API_KEY", "")
-LLM_MODEL    = os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL") or _dotenv.get("LLM_BASE_URL", "https://api.anthropic.com/v1")
+LLM_API_KEY  = os.environ.get("LLM_API_KEY") or _dotenv.get("LLM_API_KEY", "")
+LLM_MODEL    = os.environ.get("LLM_MODEL")    or _dotenv.get("LLM_MODEL", "claude-haiku-4-5-20251001")
 
 _client: OpenAI | None = None
 

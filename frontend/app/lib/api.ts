@@ -132,6 +132,17 @@ export interface PartyDetail {
   expenditure: { financial_year: string; category: string; amount: number }[];
 }
 
+export interface DonorInterestRow {
+  id: number;
+  description: string | null;
+  value_approx: number | null;
+  date_received: string | null;
+  date_declared: string | null;
+  days_late: number | null;
+  source_url: string | null;
+  politician: PoliticianMin | null;
+}
+
 export interface DonorDetail {
   id: number;
   name: string;
@@ -143,8 +154,10 @@ export interface DonorDetail {
   notes: string | null;
   needs_review: boolean;
   total_donated: number;
+  total_gifted: number;
   donations_by_party: PartyTotalRow[];
   donations: DonationByPartyRow[];
+  interests: DonorInterestRow[];
 }
 
 export interface SearchResultItem {

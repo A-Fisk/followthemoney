@@ -1,10 +1,11 @@
 import { notFound } from "next/navigation";
-import { fetchDonor, DonationByPartyRow, PartyTotalRow } from "../../lib/api";
+import { fetchDonor, DonationByPartyRow, PartyTotalRow, DonorInterestRow } from "../../lib/api";
 
 // ── Sort types ──────────────────────────────────────────────────────────────
 
 type DonationSort = "amount" | "recipient" | "year" | "type";
 type PartySort    = "party"  | "total";
+type GiftSort     = "politician" | "value" | "received" | "declared";
 
 function sortDonations(donations: DonationByPartyRow[], sort: DonationSort): DonationByPartyRow[] {
   return [...donations].sort((a, b) => {
@@ -21,6 +22,15 @@ function sortByParty(rows: PartyTotalRow[], sort: PartySort): PartyTotalRow[] {
   return [...rows].sort((a, b) =>
     sort === "party" ? a.party.name.localeCompare(b.party.name) : b.total - a.total
   );
+}
+
+function sortGifts(rows: DonorInterestRow[], sort: GiftSort): DonorInterestRow[] {
+  return [...rows].sort((a, b) => {
+    if (sort === "politician") return (a.politician?.name ?? "").localeCompare(b.politician?.name ?? "");
+    if (sort === "value")      return (b.value_approx ?? 0) - (a.value_approx ?? 0);
+    if (sort === "received")   return (b.date_received ?? "").localeCompare(a.date_received ?? "");
+    return (b.date_declared ?? "").localeCompare(a.date_declared ?? ""); // declared (default)
+  });
 }
 
 // ── URL helper ───────────────────────────────────────────────────────────────
@@ -75,22 +85,25 @@ export default async function DonorPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ sort?: string; psort?: string }>;
+  searchParams: Promise<{ sort?: string; psort?: string; gsort?: string }>;
 }) {
   const { id } = await params;
-  const { sort, psort } = await searchParams;
+  const { sort, psort, gsort } = await searchParams;
 
   const donationSort: DonationSort =
     sort === "recipient" || sort === "year" || sort === "type" ? sort : "amount";
   const partySort: PartySort = psort === "party" ? "party" : "total";
+  const giftSort: GiftSort =
+    gsort === "politician" || gsort === "value" || gsort === "received" ? gsort : "declared";
 
   const donor = await fetchDonor(id);
   if (!donor) notFound();
 
-  const cp = { sort, psort }; // current params
+  const cp = { sort, psort, gsort }; // current params
 
   const sortedDonations = sortDonations(donor.donations, donationSort);
   const sortedByParty   = sortByParty(donor.donations_by_party, partySort);
+  const sortedGifts     = sortGifts(donor.interests, giftSort);
 
   return (
     <div className="space-y-8">
@@ -136,13 +149,77 @@ export default async function DonorPage({
             </>
           )}
         </dl>
-        <p className="mt-3 text-lg font-semibold">
-          Total donated:{" "}
-          <span className="text-gray-700">
-            ${donor.total_donated.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
-          </span>
-        </p>
+        <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1">
+          {donor.total_donated > 0 && (
+            <p className="text-lg font-semibold">
+              Total donated:{" "}
+              <span className="text-gray-700">
+                ${donor.total_donated.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
+              </span>
+            </p>
+          )}
+          {donor.total_gifted > 0 && (
+            <p className="text-lg font-semibold">
+              Total gifted:{" "}
+              <span className="text-gray-700">
+                ${donor.total_gifted.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
+              </span>
+              <span className="ml-1 text-sm font-normal text-gray-400">(approx)</span>
+            </p>
+          )}
+        </div>
       </div>
+
+      {/* Gifts & travel — Register of Interests */}
+      {sortedGifts.length > 0 && (
+        <section>
+          <h2 className="mb-3 font-semibold text-gray-900">
+            Gifts & travel declared{" "}
+            <span className="font-normal text-gray-400 text-sm">({sortedGifts.length})</span>
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                  <SortTh label="Politician"  sortKey="politician" current={giftSort} href={buildUrl(cp, { gsort: "politician" })} />
+                  <th className="py-2 pr-4 text-gray-500 uppercase tracking-wide text-xs">Description</th>
+                  <SortTh label="Value"       sortKey="value"       current={giftSort} href={buildUrl(cp, { gsort: "value" })} right />
+                  <SortTh label="Received"    sortKey="received"    current={giftSort} href={buildUrl(cp, { gsort: "received" })} />
+                  <SortTh label="Declared"    sortKey="declared"    current={giftSort} href={buildUrl(cp, { gsort: "declared" })} />
+                  <th className="py-2 text-gray-500 uppercase tracking-wide text-xs">Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedGifts.map((g) => (
+                  <tr key={g.id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-2 pr-4 text-xs">
+                      {g.politician ? (
+                        <a href={`/politician/${g.politician.id}`} className="text-blue-600 hover:underline">
+                          {g.politician.name}
+                        </a>
+                      ) : "—"}
+                    </td>
+                    <td className="py-2 pr-4 max-w-xs text-xs leading-snug">{g.description || "—"}</td>
+                    <td className="py-2 pr-4 text-right tabular-nums text-xs">
+                      {g.value_approx != null
+                        ? `$${g.value_approx.toLocaleString("en-AU", { maximumFractionDigits: 0 })}`
+                        : "—"}
+                    </td>
+                    <td className="py-2 pr-4 tabular-nums text-xs">{g.date_received || "—"}</td>
+                    <td className="py-2 pr-4 tabular-nums text-xs">{g.date_declared || "—"}</td>
+                    <td className="py-2">
+                      {g.source_url ? (
+                        <a href={g.source_url} target="_blank" rel="noopener noreferrer"
+                           className="text-xs text-blue-500 hover:underline">↗</a>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {/* By party */}
       {sortedByParty.length > 0 && (

@@ -23,17 +23,19 @@ Options:
                        Minimum confidence to mark as auto-apply (default: high)
     --interactive      Step through unresolved cases one by one for manual review
     --dry-run          Print decisions without writing output file
+    --no-batch         Use sequential API calls instead of Anthropic Batch API
 """
 
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env", override=True)
 
-from llm_client import chat_json, LLM_MODEL
+from llm_client import chat_json, LLM_MODEL, LLM_API_KEY
 
 SYSTEM_PROMPT = """\
 You are a data quality assistant reviewing Australian political donation records.
@@ -89,6 +91,76 @@ def review_case(name: str, candidates: list[str], reason: str) -> dict:
             "confidence": "low",
             "reasoning": f"LLM error: {e}",
         }
+
+
+def _build_user_message(name: str, candidates: list[str], reason: str) -> str:
+    return (
+        f"Ambiguous donor record: {name!r}\n"
+        f"Possible matches: {json.dumps(candidates)}\n"
+        f"Flagged by: {reason} matching\n\n"
+        f"Respond with JSON matching this schema:\n{json.dumps(DECISION_SCHEMA, indent=2)}"
+    )
+
+
+def submit_batch(cases: list[dict], model: str) -> str:
+    """Submit all cases to Anthropic Batch API. Returns batch_id."""
+    import anthropic
+    client = anthropic.Anthropic(api_key=LLM_API_KEY)
+    requests = [
+        {
+            "custom_id": str(i),
+            "params": {
+                "model": model,
+                "max_tokens": 512,
+                "system": [{"type": "text", "text": SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"}}],
+                "messages": [
+                    {"role": "user", "content": _build_user_message(
+                        case["name"], case["candidates"], case["reason"]
+                    )}
+                ],
+            },
+        }
+        for i, case in enumerate(cases)
+    ]
+    batch = client.messages.batches.create(requests=requests)
+    return batch.id
+
+
+def collect_batch(batch_id: str) -> list:
+    """Poll until the batch is complete and return results sorted by custom_id."""
+    import anthropic
+    client = anthropic.Anthropic(api_key=LLM_API_KEY)
+    while True:
+        batch = client.messages.batches.retrieve(batch_id)
+        c = batch.request_counts
+        print(f"  [{batch.processing_status}] processing={c.processing} "
+              f"succeeded={c.succeeded} errored={c.errored}", flush=True)
+        if batch.processing_status == "ended":
+            break
+        time.sleep(30)
+    return sorted(client.messages.batches.results(batch_id), key=lambda r: int(r.custom_id))
+
+
+def parse_batch_result(result) -> dict:
+    """Convert one Anthropic batch result into a decision dict."""
+    if result.result.type == "succeeded":
+        text = result.result.message.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        try:
+            parsed = json.loads(text)
+            return {
+                "same_entity": bool(parsed.get("same_entity", False)),
+                "canonical": parsed.get("canonical"),
+                "confidence": parsed.get("confidence", "low"),
+                "reasoning": parsed.get("reasoning", ""),
+            }
+        except json.JSONDecodeError as e:
+            return {"same_entity": False, "canonical": None, "confidence": "low",
+                    "reasoning": f"LLM error: JSON parse error: {e}"}
+    return {"same_entity": False, "canonical": None, "confidence": "low",
+            "reasoning": f"LLM error: {result.result.error}"}
 
 
 def interactive_review(decisions: list[dict], output_path: Path) -> list[dict]:
@@ -212,6 +284,8 @@ def main():
     parser.add_argument("--interactive", action="store_true",
                         help="Step through unresolved cases for manual review")
     parser.add_argument("--dry-run", action="store_true", help="Print decisions, don't write file")
+    parser.add_argument("--no-batch", action="store_true",
+                        help="Use sequential calls instead of Anthropic Batch API")
     args = parser.parse_args()
 
     raw = json.loads(Path(args.input).read_text())
@@ -243,50 +317,93 @@ def main():
             print(f"Saved to {output_path}")
         return
 
-    print(f"Reviewing {total} ambiguous cases using {LLM_MODEL}...")
-    print(f"Auto-apply threshold: confidence >= {args.confidence}\n")
-
     conf_rank = {"low": 0, "medium": 1, "high": 2}
     threshold = conf_rank[args.confidence]
-
     decisions = []
     auto_merge = 0
     skip = 0
     errors = 0
 
-    for i, case in enumerate(cases, 1):
-        name = case["name"]
-        candidates = case["candidates"]
-        reason = case["reason"]
+    if args.no_batch:
+        # ── Sequential mode ───────────────────────────────────────────────────
+        print(f"Reviewing {total} ambiguous cases using {LLM_MODEL} (sequential)...")
+        print(f"Auto-apply threshold: confidence >= {args.confidence}\n")
 
-        print(f"[{i}/{total}] {name!r}", end=" ... ", flush=True)
-        decision = review_case(name, candidates, reason)
+        for i, case in enumerate(cases, 1):
+            name = case["name"]
+            candidates = case["candidates"]
+            reason = case["reason"]
 
-        decision["name"] = name
-        decision["candidates"] = candidates
-        decision["reason"] = reason
-        decision["auto_apply"] = (
-            decision["same_entity"]
-            and conf_rank.get(decision["confidence"], 0) >= threshold
-        )
+            print(f"[{i}/{total}] {name!r}", end=" ... ", flush=True)
+            decision = review_case(name, candidates, reason)
 
-        if "error" in decision["reasoning"].lower():
-            errors += 1
-            status = "ERROR"
-        elif decision["auto_apply"]:
-            auto_merge += 1
-            status = f"MERGE → {decision['canonical']!r} [{decision['confidence']}]"
-        elif decision["same_entity"]:
-            status = f"MERGE (low confidence, manual) → {decision['canonical']!r}"
-        else:
-            skip += 1
-            status = f"SKIP [{decision['confidence']}]"
+            decision["name"] = name
+            decision["candidates"] = candidates
+            decision["reason"] = reason
+            decision["auto_apply"] = (
+                decision["same_entity"]
+                and conf_rank.get(decision["confidence"], 0) >= threshold
+            )
 
-        print(status)
-        if decision["reasoning"] and "error" not in decision["reasoning"].lower():
-            print(f"    {decision['reasoning']}")
+            if "error" in decision["reasoning"].lower():
+                errors += 1
+                status = f"ERROR: {decision['reasoning']}"
+            elif decision["auto_apply"]:
+                auto_merge += 1
+                status = f"MERGE → {decision['canonical']!r} [{decision['confidence']}]"
+            elif decision["same_entity"]:
+                status = f"MERGE (low confidence, manual) → {decision['canonical']!r}"
+            else:
+                skip += 1
+                status = f"SKIP [{decision['confidence']}]"
 
-        decisions.append(decision)
+            print(status)
+            if decision["reasoning"] and "error" not in decision["reasoning"].lower():
+                print(f"    {decision['reasoning']}")
+
+            decisions.append(decision)
+
+    else:
+        # ── Batch mode (Anthropic Batch API) ──────────────────────────────────
+        print(f"Submitting {total} cases to Anthropic Batch API ({LLM_MODEL})...")
+        print(f"Auto-apply threshold: confidence >= {args.confidence}\n")
+
+        batch_id = submit_batch(cases, LLM_MODEL)
+        print(f"Batch submitted: {batch_id}")
+        print("Polling for results (every 30s)...")
+        results = collect_batch(batch_id)
+
+        print(f"\nBatch complete. Processing results...\n")
+        for result in results:
+            idx = int(result.custom_id)
+            case = cases[idx]
+            decision = parse_batch_result(result)
+            decision["name"] = case["name"]
+            decision["candidates"] = case["candidates"]
+            decision["reason"] = case["reason"]
+            decision["auto_apply"] = (
+                decision["same_entity"]
+                and conf_rank.get(decision["confidence"], 0) >= threshold
+            )
+
+            if "error" in decision["reasoning"].lower():
+                errors += 1
+                status = f"ERROR: {decision['reasoning']}"
+            elif decision["auto_apply"]:
+                auto_merge += 1
+                status = f"MERGE → {decision['canonical']!r} [{decision['confidence']}]"
+            elif decision["same_entity"]:
+                status = f"MERGE (low confidence, manual) → {decision['canonical']!r}"
+            else:
+                skip += 1
+                status = f"SKIP [{decision['confidence']}]"
+
+            print(f"[{idx+1}/{total}] {case['name']!r} ... {status}")
+            if decision["reasoning"] and "error" not in decision["reasoning"].lower():
+                print(f"    {decision['reasoning']}")
+
+            decisions.append(decision)
+
 
     print(f"\n{'='*60}")
     print(f"Total cases   : {total}")
