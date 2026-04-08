@@ -175,10 +175,12 @@ export default async function PoliticianPage({
   searchParams: Promise<{
     sort?: string; parliament?: string; issue?: string; from?: string; to?: string;
     ptd?: string; int?: string; dd?: string; vpb?: string; dm?: string;
+    ddl?: string; vpbl?: string; dml?: string; intl?: string; vl?: string;
   }>;
 }) {
   const { id } = await params;
-  const { sort, parliament, issue, from, to, ptd, int: intParam, dd, vpb, dm } = await searchParams;
+  const { sort, parliament, issue, from, to, ptd, int: intParam, dd, vpb, dm,
+          ddl, vpbl, dml, intl, vl } = await searchParams;
 
   const voteSort:   VoteSort = sort === "vote" || sort === "issue" ? sort : "date";
   const ptdSort:    PtdSort  = ptd === "donor" || ptd === "industry" ? ptd : "total";
@@ -221,7 +223,15 @@ export default async function PoliticianPage({
   )].sort();
 
   // All current params — passed to buildUrl so every sort link preserves the others
-  const cp = { sort, parliament, issue, from, to, ptd, int: intParam, dd, vpb, dm };
+  const cp = { sort, parliament, issue, from, to, ptd, int: intParam, dd, vpb, dm,
+               ddl, vpbl, dml, intl, vl };
+
+  const DEFAULT_LIMIT = 10;
+  const ddLimit   = ddl  === "all" ? Infinity : DEFAULT_LIMIT;
+  const vpbLimit  = vpbl === "all" ? Infinity : DEFAULT_LIMIT;
+  const dmLimit   = dml  === "all" ? Infinity : DEFAULT_LIMIT;
+  const intLimit  = intl === "all" ? Infinity : DEFAULT_LIMIT;
+  const voteLimit = vl   === "all" ? Infinity : DEFAULT_LIMIT;
 
   // Current financial year always available in "to" dropdown
   const now = new Date();
@@ -256,12 +266,18 @@ export default async function PoliticianPage({
     (!fyStart || !i.date_declared || i.date_declared >= fyStart) &&
     (!fyEnd   || !i.date_declared || i.date_declared <= fyEnd));
 
-  const topDonors     = sortTopDonors(pol.party_top_donors, ptdSort);
-  const interests     = sortInterests(filteredInterests, intSort);
-  const directDons    = sortDonations(filteredDirectDons, ddSort);
-  const viaBranchDons = sortViaBranch(filteredViaBranchDons, vpbSort);
-  const asDonorDons   = sortAsDonor(filteredAsDonorDons, dmSort);
+  const topDonors         = sortTopDonors(pol.party_top_donors, ptdSort);
+  const sortedInterests   = sortInterests(filteredInterests, intSort);
+  const sortedDirectDons  = sortDonations(filteredDirectDons, ddSort);
+  const sortedViaBranch   = sortViaBranch(filteredViaBranchDons, vpbSort);
+  const sortedAsDonor     = sortAsDonor(filteredAsDonorDons, dmSort);
+
+  const interests     = sortedInterests.slice(0, intLimit);
+  const directDons    = sortedDirectDons.slice(0, ddLimit);
+  const viaBranchDons = sortedViaBranch.slice(0, vpbLimit);
+  const asDonorDons   = sortedAsDonor.slice(0, dmLimit);
   const sortedVotes   = sortVotes(filteredVotes, voteSort);
+  const visibleVotes  = sortedVotes.slice(0, voteLimit);
 
   return (
     <div className="space-y-8">
@@ -367,55 +383,70 @@ export default async function PoliticianPage({
         <h2 className="mb-3 font-semibold text-gray-900">
           Register of Interests — gifts & travel{" "}
           <span className="font-normal text-gray-400 text-sm">
-            ({filteredInterests.length}{(from || to) ? ` of ${pol.interests.length} filtered` : ""})
+            ({interests.length} of {filteredInterests.length}{(from || to) ? ` filtered` : ""})
           </span>
         </h2>
         {pol.interests.length === 0 ? (
           <p className="text-sm text-gray-400">No declared interests on record.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
-                  <SortTh label="Description" sortKey="description" current={intSort} href={buildUrl(cp, { int: "description" })} />
-                  <SortTh label="Provider"    sortKey="provider"    current={intSort} href={buildUrl(cp, { int: "provider" })} />
-                  <SortTh label="Received"    sortKey="received"    current={intSort} href={buildUrl(cp, { int: "received" })} />
-                  <SortTh label="Declared"    sortKey="declared"    current={intSort} href={buildUrl(cp, { int: "declared" })} />
-                  <SortTh label="Days late"   sortKey="days_late"   current={intSort} href={buildUrl(cp, { int: "days_late" })} right />
-                  <th className="py-2 text-gray-500 uppercase tracking-wide text-xs">Source</th>
-                </tr>
-              </thead>
-              <tbody>
-                {interests.map((i) => (
-                  <tr key={i.id} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="py-2 pr-4 max-w-xs text-xs leading-snug">{i.description || "—"}</td>
-                    <td className="py-2 pr-4 text-xs">
-                      {i.donor ? (
-                        <a href={`/donor/${i.donor.id}`} className="text-blue-600 hover:underline">
-                          {i.donor.name}
-                        </a>
-                      ) : "—"}
-                    </td>
-                    <td className="py-2 pr-4 text-xs tabular-nums">{i.date_received || "—"}</td>
-                    <td className="py-2 pr-4 text-xs tabular-nums">{i.date_declared || "—"}</td>
-                    <td className="py-2 pr-4 text-xs text-right">
-                      {i.days_late != null ? (
-                        <span className={i.days_late > 0 ? "text-red-600 font-medium" : "text-gray-500"}>
-                          {i.days_late > 0 ? `+${i.days_late}` : i.days_late}
-                        </span>
-                      ) : "—"}
-                    </td>
-                    <td className="py-2">
-                      {i.source_url ? (
-                        <a href={i.source_url} target="_blank" rel="noopener noreferrer"
-                           className="text-xs text-blue-500 hover:underline">↗</a>
-                      ) : "—"}
-                    </td>
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                    <SortTh label="Description" sortKey="description" current={intSort} href={buildUrl(cp, { int: "description" })} />
+                    <SortTh label="Provider"    sortKey="provider"    current={intSort} href={buildUrl(cp, { int: "provider" })} />
+                    <SortTh label="Received"    sortKey="received"    current={intSort} href={buildUrl(cp, { int: "received" })} />
+                    <SortTh label="Declared"    sortKey="declared"    current={intSort} href={buildUrl(cp, { int: "declared" })} />
+                    <SortTh label="Days late"   sortKey="days_late"   current={intSort} href={buildUrl(cp, { int: "days_late" })} right />
+                    <th className="py-2 text-gray-500 uppercase tracking-wide text-xs">Source</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {interests.map((i) => (
+                    <tr key={i.id} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="py-2 pr-4 max-w-xs text-xs leading-snug">{i.description || "—"}</td>
+                      <td className="py-2 pr-4 text-xs">
+                        {i.donor ? (
+                          <a href={`/donor/${i.donor.id}`} className="text-blue-600 hover:underline">
+                            {i.donor.name}
+                          </a>
+                        ) : "—"}
+                      </td>
+                      <td className="py-2 pr-4 text-xs tabular-nums">{i.date_received || "—"}</td>
+                      <td className="py-2 pr-4 text-xs tabular-nums">{i.date_declared || "—"}</td>
+                      <td className="py-2 pr-4 text-xs text-right">
+                        {i.days_late != null ? (
+                          <span className={i.days_late > 0 ? "text-red-600 font-medium" : "text-gray-500"}>
+                            {i.days_late > 0 ? `+${i.days_late}` : i.days_late}
+                          </span>
+                        ) : "—"}
+                      </td>
+                      <td className="py-2">
+                        {i.source_url ? (
+                          <a href={i.source_url} target="_blank" rel="noopener noreferrer"
+                             className="text-xs text-blue-500 hover:underline">↗</a>
+                        ) : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {filteredInterests.length > DEFAULT_LIMIT && (
+              <p className="mt-2 text-xs">
+                {intl === "all" ? (
+                  <a href={buildUrl(cp, { intl: undefined })} className="text-blue-600 hover:underline">
+                    Show top {DEFAULT_LIMIT}
+                  </a>
+                ) : (
+                  <a href={buildUrl(cp, { intl: "all" })} className="text-blue-600 hover:underline">
+                    Show all {filteredInterests.length}
+                  </a>
+                )}
+              </p>
+            )}
+          </>
         )}
       </section>
 
@@ -425,7 +456,7 @@ export default async function PoliticianPage({
           <h2 className="font-semibold text-gray-900">
             Direct donations received{" "}
             <span className="font-normal text-gray-400 text-sm">
-              ({filteredDirectDons.length}{(from || to) ? ` of ${pol.direct_donations.length} filtered` : ""})
+              ({directDons.length} of {filteredDirectDons.length}{(from || to) ? ` filtered` : ""})
             </span>
           </h2>
           {pol.direct_donations.length > 0 && (
@@ -442,43 +473,58 @@ export default async function PoliticianPage({
             No direct donations on record. Most donations flow via party — see party profile above.
           </p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
-                  <SortTh label="Year"     sortKey="year"     current={ddSort} href={buildUrl(cp, { dd: "year" })} />
-                  <SortTh label="Amount"   sortKey="amount"   current={ddSort} href={buildUrl(cp, { dd: "amount" })} right />
-                  <SortTh label="Donor"    sortKey="donor"    current={ddSort} href={buildUrl(cp, { dd: "donor" })} />
-                  <SortTh label="Industry" sortKey="industry" current={ddSort} href={buildUrl(cp, { dd: "industry" })} />
-                  <th className="py-2 text-gray-500 uppercase tracking-wide text-xs">Source</th>
-                </tr>
-              </thead>
-              <tbody>
-                {directDons.map((d) => (
-                  <tr key={d.id} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="py-2 pr-4">{d.financial_year}</td>
-                    <td className="py-2 pr-4 text-right tabular-nums">
-                      ${d.amount.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
-                    </td>
-                    <td className="py-2 pr-4">
-                      {d.donor ? (
-                        <a href={`/donor/${d.donor.id}`} className="text-blue-600 hover:underline">
-                          {d.donor.name}
-                        </a>
-                      ) : "—"}
-                    </td>
-                    <td className="py-2 pr-4 text-gray-500 text-xs">{d.donor?.industry_label || "—"}</td>
-                    <td className="py-2">
-                      {d.source_url ? (
-                        <a href={d.source_url} target="_blank" rel="noopener noreferrer"
-                           className="text-xs text-blue-500 hover:underline">AEC ↗</a>
-                      ) : "—"}
-                    </td>
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                    <SortTh label="Year"     sortKey="year"     current={ddSort} href={buildUrl(cp, { dd: "year" })} />
+                    <SortTh label="Amount"   sortKey="amount"   current={ddSort} href={buildUrl(cp, { dd: "amount" })} right />
+                    <SortTh label="Donor"    sortKey="donor"    current={ddSort} href={buildUrl(cp, { dd: "donor" })} />
+                    <SortTh label="Industry" sortKey="industry" current={ddSort} href={buildUrl(cp, { dd: "industry" })} />
+                    <th className="py-2 text-gray-500 uppercase tracking-wide text-xs">Source</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {directDons.map((d) => (
+                    <tr key={d.id} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="py-2 pr-4">{d.financial_year}</td>
+                      <td className="py-2 pr-4 text-right tabular-nums">
+                        ${d.amount.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
+                      </td>
+                      <td className="py-2 pr-4">
+                        {d.donor ? (
+                          <a href={`/donor/${d.donor.id}`} className="text-blue-600 hover:underline">
+                            {d.donor.name}
+                          </a>
+                        ) : "—"}
+                      </td>
+                      <td className="py-2 pr-4 text-gray-500 text-xs">{d.donor?.industry_label || "—"}</td>
+                      <td className="py-2">
+                        {d.source_url ? (
+                          <a href={d.source_url} target="_blank" rel="noopener noreferrer"
+                             className="text-xs text-blue-500 hover:underline">AEC ↗</a>
+                        ) : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {filteredDirectDons.length > DEFAULT_LIMIT && (
+              <p className="mt-2 text-xs">
+                {ddl === "all" ? (
+                  <a href={buildUrl(cp, { ddl: undefined })} className="text-blue-600 hover:underline">
+                    Show top {DEFAULT_LIMIT}
+                  </a>
+                ) : (
+                  <a href={buildUrl(cp, { ddl: "all" })} className="text-blue-600 hover:underline">
+                    Show all {filteredDirectDons.length}
+                  </a>
+                )}
+              </p>
+            )}
+          </>
         )}
       </section>
 
@@ -488,7 +534,7 @@ export default async function PoliticianPage({
           <h2 className="mb-3 font-semibold text-gray-900">
             Donations via named party branch{" "}
             <span className="font-normal text-gray-400 text-sm">
-              ({filteredViaBranchDons.length}{(from || to) ? ` of ${pol.via_party_donations.length} filtered` : ""})
+              ({viaBranchDons.length} of {filteredViaBranchDons.length}{(from || to) ? ` filtered` : ""})
             </span>
           </h2>
           <div className="overflow-x-auto">
@@ -530,6 +576,19 @@ export default async function PoliticianPage({
               </tbody>
             </table>
           </div>
+          {filteredViaBranchDons.length > DEFAULT_LIMIT && (
+            <p className="mt-2 text-xs">
+              {vpbl === "all" ? (
+                <a href={buildUrl(cp, { vpbl: undefined })} className="text-blue-600 hover:underline">
+                  Show top {DEFAULT_LIMIT}
+                </a>
+              ) : (
+                <a href={buildUrl(cp, { vpbl: "all" })} className="text-blue-600 hover:underline">
+                  Show all {filteredViaBranchDons.length}
+                </a>
+              )}
+            </p>
+          )}
         </section>
       )}
 
@@ -539,7 +598,7 @@ export default async function PoliticianPage({
           <h2 className="mb-3 font-semibold text-gray-900">
             Donations made{" "}
             <span className="font-normal text-gray-400 text-sm">
-              ({filteredAsDonorDons.length}{(from || to) ? ` of ${pol.as_donor_donations.length} filtered` : ""})
+              ({asDonorDons.length} of {filteredAsDonorDons.length}{(from || to) ? ` filtered` : ""})
             </span>
           </h2>
           <div className="overflow-x-auto">
@@ -583,6 +642,19 @@ export default async function PoliticianPage({
               </tbody>
             </table>
           </div>
+          {filteredAsDonorDons.length > DEFAULT_LIMIT && (
+            <p className="mt-2 text-xs">
+              {dml === "all" ? (
+                <a href={buildUrl(cp, { dml: undefined })} className="text-blue-600 hover:underline">
+                  Show top {DEFAULT_LIMIT}
+                </a>
+              ) : (
+                <a href={buildUrl(cp, { dml: "all" })} className="text-blue-600 hover:underline">
+                  Show all {filteredAsDonorDons.length}
+                </a>
+              )}
+            </p>
+          )}
         </section>
       )}
 
@@ -592,7 +664,7 @@ export default async function PoliticianPage({
           <h2 className="font-semibold text-gray-900">
             Voting record{" "}
             <span className="font-normal text-gray-400 text-sm">
-              ({filteredVotes.length}{(selectedParliament || selectedIssue || from || to) ? ` of ${pol.votes.length} filtered` : ""})
+              ({visibleVotes.length} of {filteredVotes.length}{(selectedParliament || selectedIssue || from || to) ? ` filtered` : ""})
             </span>
           </h2>
         </div>
@@ -655,7 +727,7 @@ export default async function PoliticianPage({
                 </tr>
               </thead>
               <tbody>
-                {sortedVotes.map((v) => {
+                {visibleVotes.map((v) => {
                   const link = tvfyUrl(v);
                   return (
                     <tr key={v.id} className="border-b border-gray-100 hover:bg-gray-50">
@@ -693,6 +765,19 @@ export default async function PoliticianPage({
               </tbody>
             </table>
           </div>
+        )}
+        {filteredVotes.length > DEFAULT_LIMIT && (
+          <p className="mt-2 text-xs">
+            {vl === "all" ? (
+              <a href={buildUrl(cp, { vl: undefined })} className="text-blue-600 hover:underline">
+                Show top {DEFAULT_LIMIT}
+              </a>
+            ) : (
+              <a href={buildUrl(cp, { vl: "all" })} className="text-blue-600 hover:underline">
+                Show all {filteredVotes.length}
+              </a>
+            )}
+          </p>
         )}
         {filteredVotes.length > 0 && (
           <p className="mt-2 text-xs text-gray-400">

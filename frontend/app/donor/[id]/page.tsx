@@ -80,15 +80,20 @@ function SortTh({
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
+const DEFAULT_LIMIT = 10;
+
 export default async function DonorPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ sort?: string; psort?: string; gsort?: string; from?: string; to?: string }>;
+  searchParams: Promise<{
+    sort?: string; psort?: string; gsort?: string; from?: string; to?: string;
+    gl?: string; pl?: string; dl?: string;
+  }>;
 }) {
   const { id } = await params;
-  const { sort, psort, gsort, from, to } = await searchParams;
+  const { sort, psort, gsort, from, to, gl, pl, dl } = await searchParams;
 
   const donationSort: DonationSort =
     sort === "recipient" || sort === "year" || sort === "type" ? sort : "amount";
@@ -99,7 +104,11 @@ export default async function DonorPage({
   const donor = await fetchDonor(id);
   if (!donor) notFound();
 
-  const cp = { sort, psort, gsort, from, to }; // current params
+  const cp = { sort, psort, gsort, from, to, gl, pl, dl }; // current params
+
+  const giftLimit     = gl === "all" ? Infinity : DEFAULT_LIMIT;
+  const partyLimit    = pl === "all" ? Infinity : DEFAULT_LIMIT;
+  const donationLimit = dl === "all" ? Infinity : DEFAULT_LIMIT;
 
   // Current financial year (July–June), e.g. "2025-26"
   const now = new Date();
@@ -139,6 +148,10 @@ export default async function DonorPage({
   const sortedDonations = sortDonations(filteredDonations, donationSort);
   const sortedByParty   = sortByParty(filteredByParty, partySort);
   const sortedGifts     = sortGifts(filteredGifts, giftSort);
+
+  const visibleGifts     = sortedGifts.slice(0, giftLimit);
+  const visibleByParty   = sortedByParty.slice(0, partyLimit);
+  const visibleDonations = sortedDonations.slice(0, donationLimit);
 
   return (
     <div className="space-y-8">
@@ -248,7 +261,7 @@ export default async function DonorPage({
           <h2 className="mb-3 font-semibold text-gray-900">
             Gifts & travel declared{" "}
             <span className="font-normal text-gray-400 text-sm">
-              ({sortedGifts.length}{(from || to) ? ` of ${donor.interests.length} filtered` : ""})
+              ({visibleGifts.length} of {filteredGifts.length}{(from || to) ? ` filtered` : ""})
             </span>
           </h2>
           <div className="overflow-x-auto">
@@ -264,7 +277,7 @@ export default async function DonorPage({
                 </tr>
               </thead>
               <tbody>
-                {sortedGifts.map((g) => (
+                {visibleGifts.map((g) => (
                   <tr key={g.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="py-2 pr-4 text-xs">
                       {g.politician ? (
@@ -292,6 +305,19 @@ export default async function DonorPage({
               </tbody>
             </table>
           </div>
+          {filteredGifts.length > DEFAULT_LIMIT && (
+            <p className="mt-2 text-xs">
+              {gl === "all" ? (
+                <a href={buildUrl(cp, { gl: undefined })} className="text-blue-600 hover:underline">
+                  Show top {DEFAULT_LIMIT}
+                </a>
+              ) : (
+                <a href={buildUrl(cp, { gl: "all" })} className="text-blue-600 hover:underline">
+                  Show all {filteredGifts.length}
+                </a>
+              )}
+            </p>
+          )}
         </section>
       )}
 
@@ -300,11 +326,9 @@ export default async function DonorPage({
         <section>
           <h2 className="mb-3 font-semibold text-gray-900">
             Donations by party{" "}
-            {(from || to) && (
-              <span className="font-normal text-gray-400 text-sm">
-                ({sortedByParty.length} of {donor.donations_by_party.length} filtered)
-              </span>
-            )}
+            <span className="font-normal text-gray-400 text-sm">
+              ({visibleByParty.length} of {filteredByParty.length}{(from || to) ? ` filtered` : ""})
+            </span>
           </h2>
           <table className="w-full text-sm border-collapse">
             <thead>
@@ -314,7 +338,7 @@ export default async function DonorPage({
               </tr>
             </thead>
             <tbody>
-              {sortedByParty.map((r, i) => (
+              {visibleByParty.map((r, i) => (
                 <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
                   <td className="py-2 pr-4">
                     <a href={`/party/${r.party.id}`} className="text-blue-600 hover:underline">
@@ -331,6 +355,19 @@ export default async function DonorPage({
               ))}
             </tbody>
           </table>
+          {filteredByParty.length > DEFAULT_LIMIT && (
+            <p className="mt-2 text-xs">
+              {pl === "all" ? (
+                <a href={buildUrl(cp, { pl: undefined })} className="text-blue-600 hover:underline">
+                  Show top {DEFAULT_LIMIT}
+                </a>
+              ) : (
+                <a href={buildUrl(cp, { pl: "all" })} className="text-blue-600 hover:underline">
+                  Show all {filteredByParty.length}
+                </a>
+              )}
+            </p>
+          )}
         </section>
       )}
 
@@ -341,7 +378,7 @@ export default async function DonorPage({
             <h2 className="font-semibold text-gray-900">
               All donations{" "}
               <span className="text-gray-400 font-normal text-sm">
-                ({filteredDonations.length}{(from || to) ? ` of ${donor.donations.length} filtered` : ""})
+                ({visibleDonations.length} of {filteredDonations.length}{(from || to) ? ` filtered` : ""})
               </span>
             </h2>
             <a
@@ -363,7 +400,7 @@ export default async function DonorPage({
                 </tr>
               </thead>
               <tbody>
-                {sortedDonations.map((d) => (
+                {visibleDonations.map((d) => (
                   <tr key={d.id} className="border-b border-gray-100 hover:bg-gray-50">
                     <td className="py-2 pr-4 tabular-nums">{d.financial_year}</td>
                     <td className="py-2 pr-4 text-right tabular-nums">
@@ -392,6 +429,19 @@ export default async function DonorPage({
               </tbody>
             </table>
           </div>
+          {filteredDonations.length > DEFAULT_LIMIT && (
+            <p className="mt-2 text-xs">
+              {dl === "all" ? (
+                <a href={buildUrl(cp, { dl: undefined })} className="text-blue-600 hover:underline">
+                  Show top {DEFAULT_LIMIT}
+                </a>
+              ) : (
+                <a href={buildUrl(cp, { dl: "all" })} className="text-blue-600 hover:underline">
+                  Show all {filteredDonations.length}
+                </a>
+              )}
+            </p>
+          )}
         </section>
       )}
     </div>
