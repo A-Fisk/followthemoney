@@ -101,8 +101,13 @@ export default async function DonorPage({
 
   const cp = { sort, psort, gsort, from, to }; // current params
 
+  // Current financial year (July–June), e.g. "2025-26"
+  const now = new Date();
+  const fyStartYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  const currentFY = `${fyStartYear}-${String(fyStartYear + 1).slice(2)}`;
+
   const allFinancialYears = [...new Set(
-    donor.donations.map((d) => d.financial_year).filter((y): y is string => !!y)
+    [...donor.donations.map((d) => d.financial_year).filter((y): y is string => !!y), currentFY]
   )].sort();
 
   // Convert financial year "YYYY-YY" to start/end ISO dates for gifts filtering
@@ -128,6 +133,8 @@ export default async function DonorPage({
   const filteredGifts = donor.interests
     .filter((g) => !fyStart || !g.date_declared || g.date_declared >= fyStart)
     .filter((g) => !fyEnd   || !g.date_declared || g.date_declared <= fyEnd);
+
+  const filteredTotalDonated = filteredDonations.reduce((sum, d) => sum + d.amount, 0);
 
   const sortedDonations = sortDonations(filteredDonations, donationSort);
   const sortedByParty   = sortByParty(filteredByParty, partySort);
@@ -182,8 +189,14 @@ export default async function DonorPage({
             <p className="text-lg font-semibold">
               Total donated:{" "}
               <span className="text-gray-700">
-                ${donor.total_donated.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
+                ${((from || to) ? filteredTotalDonated : donor.total_donated)
+                  .toLocaleString("en-AU", { maximumFractionDigits: 0 })}
               </span>
+              {(from || to) && (
+                <span className="ml-2 text-sm font-normal text-gray-400">
+                  (${donor.total_donated.toLocaleString("en-AU", { maximumFractionDigits: 0 })} all time)
+                </span>
+              )}
             </p>
           )}
           {donor.total_gifted > 0 && (
@@ -197,6 +210,37 @@ export default async function DonorPage({
           )}
         </div>
       </div>
+
+      {/* Year filter */}
+      {allFinancialYears.length > 1 && (
+        <form method="GET" className="flex flex-wrap items-center gap-2 text-xs">
+          {Object.entries(cp).filter(([k, v]) => v && k !== "from" && k !== "to").map(([k, v]) => (
+            <input key={k} type="hidden" name={k} value={v} />
+          ))}
+          <span className="text-gray-400">Filter by year</span>
+          <select name="from" defaultValue={from ?? ""}
+            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+            <option value="">From</option>
+            {allFinancialYears.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <span className="text-gray-400">to</span>
+          <select name="to" defaultValue={to ?? ""}
+            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+            <option value="">To</option>
+            {[...allFinancialYears].reverse().map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button type="submit"
+            className="rounded px-2 py-1 bg-gray-800 text-white hover:bg-gray-700">
+            Apply
+          </button>
+          {(from || to) && (
+            <a href={buildUrl(cp, { from: undefined, to: undefined })}
+              className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
+              Clear
+            </a>
+          )}
+        </form>
+      )}
 
       {/* Gifts & travel — Register of Interests */}
       {sortedGifts.length > 0 && (
@@ -307,35 +351,6 @@ export default async function DonorPage({
               Download CSV
             </a>
           </div>
-          {allFinancialYears.length > 1 && (
-            <form method="GET" className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-              {Object.entries(cp).filter(([k, v]) => v && k !== "from" && k !== "to").map(([k, v]) => (
-                <input key={k} type="hidden" name={k} value={v} />
-              ))}
-              <span className="text-gray-400">Year</span>
-              <select name="from" defaultValue={from ?? ""}
-                className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
-                <option value="">From</option>
-                {allFinancialYears.map((y) => <option key={y} value={y}>{y}</option>)}
-              </select>
-              <span className="text-gray-400">to</span>
-              <select name="to" defaultValue={to ?? ""}
-                className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
-                <option value="">To</option>
-                {[...allFinancialYears].reverse().map((y) => <option key={y} value={y}>{y}</option>)}
-              </select>
-              <button type="submit"
-                className="rounded px-2 py-1 bg-gray-800 text-white hover:bg-gray-700">
-                Apply
-              </button>
-              {(from || to) && (
-                <a href={buildUrl(cp, { from: undefined, to: undefined })}
-                  className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
-                  Clear
-                </a>
-              )}
-            </form>
-          )}
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
