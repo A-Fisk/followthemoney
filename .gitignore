@@ -17,6 +17,7 @@ node_modules/
 .next/
 .env.local
 .env.production
+*.tsbuildinfo
 
 # Data (large files — not committed, re-download via README instructions)
 data/
