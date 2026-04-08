@@ -83,15 +83,20 @@ function SortTh({
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
+const DEFAULT_LIMIT = 10;
+
 export default async function PartyPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ yrs?: string; ind?: string; don?: string; exp?: string; from?: string; to?: string }>;
+  searchParams: Promise<{
+    yrs?: string; ind?: string; don?: string; exp?: string; from?: string; to?: string;
+    yrl?: string; indl?: string; donl?: string; expl?: string;
+  }>;
 }) {
   const { id } = await params;
-  const { yrs, ind, don, exp, from, to } = await searchParams;
+  const { yrs, ind, don, exp, from, to, yrl, indl, donl, expl } = await searchParams;
 
   const yrSort:  YrSort  = yrs === "total"    ? "total"    : "year";
   const indSort: IndSort = ind === "industry" ? "industry" : "total";
@@ -101,7 +106,12 @@ export default async function PartyPage({
   const party = await fetchParty(id);
   if (!party) notFound();
 
-  const cp = { yrs, ind, don, exp, from, to }; // current params for URL building
+  const cp = { yrs, ind, don, exp, from, to, yrl, indl, donl, expl }; // current params for URL building
+
+  const yrLimit  = yrl  === "all" ? Infinity : DEFAULT_LIMIT;
+  const indLimit = indl === "all" ? Infinity : DEFAULT_LIMIT;
+  const donLimit = donl === "all" ? Infinity : DEFAULT_LIMIT;
+  const expLimit = expl === "all" ? Infinity : DEFAULT_LIMIT;
 
   // Current financial year always available in "to" dropdown
   const now = new Date();
@@ -122,10 +132,15 @@ export default async function PartyPage({
 
   const filteredTotal = filteredByYear.reduce((sum, r) => sum + r.total, 0);
 
-  const byYear    = sortByYear(filteredByYear, yrSort);
-  const byInd     = sortByInd(party.industry_breakdown, indSort);
-  const topDonors = sortTopDonors(party.top_donors, donSort);
-  const expRows   = sortExpenditure(filteredExpenditure, expSort);
+  const sortedByYear  = sortByYear(filteredByYear, yrSort);
+  const sortedByInd   = sortByInd(party.industry_breakdown, indSort);
+  const sortedDonors  = sortTopDonors(party.top_donors, donSort);
+  const sortedExp     = sortExpenditure(filteredExpenditure, expSort);
+
+  const visibleByYear = sortedByYear.slice(0, yrLimit);
+  const visibleByInd  = sortedByInd.slice(0, indLimit);
+  const visibleDonors = sortedDonors.slice(0, donLimit);
+  const visibleExp    = sortedExp.slice(0, expLimit);
 
   return (
     <div className="space-y-8">
@@ -189,9 +204,14 @@ export default async function PartyPage({
       )}
 
       {/* Donations by year */}
-      {byYear.length > 0 && (
+      {sortedByYear.length > 0 && (
         <section>
-          <h2 className="mb-3 font-semibold text-gray-900">Donations by year</h2>
+          <h2 className="mb-3 font-semibold text-gray-900">
+            Donations by year{" "}
+            <span className="font-normal text-gray-400 text-sm">
+              ({visibleByYear.length} of {filteredByYear.length}{(from || to) ? ` filtered` : ""})
+            </span>
+          </h2>
           <table className="w-full text-sm border-collapse">
             <thead>
               <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
@@ -200,7 +220,7 @@ export default async function PartyPage({
               </tr>
             </thead>
             <tbody>
-              {byYear.map((r) => (
+              {visibleByYear.map((r) => (
                 <tr key={r.financial_year} className="border-b border-gray-100">
                   <td className="py-2 pr-4">{r.financial_year}</td>
                   <td className="py-2 text-right tabular-nums">
@@ -210,15 +230,31 @@ export default async function PartyPage({
               ))}
             </tbody>
           </table>
+          {filteredByYear.length > DEFAULT_LIMIT && (
+            <p className="mt-2 text-xs">
+              {yrl === "all" ? (
+                <a href={buildUrl(cp, { yrl: undefined })} className="text-blue-600 hover:underline">
+                  Show top {DEFAULT_LIMIT}
+                </a>
+              ) : (
+                <a href={buildUrl(cp, { yrl: "all" })} className="text-blue-600 hover:underline">
+                  Show all {filteredByYear.length}
+                </a>
+              )}
+            </p>
+          )}
         </section>
       )}
 
       {/* Industry breakdown */}
-      {byInd.length > 0 && (
+      {sortedByInd.length > 0 && (
         <section>
           <h2 className="mb-3 font-semibold text-gray-900">
             Donations by industry{" "}
-            {(from || to) && <span className="font-normal text-gray-400 text-sm">(all time)</span>}
+            <span className="font-normal text-gray-400 text-sm">
+              ({visibleByInd.length} of {sortedByInd.length}
+              {(from || to) ? " — all time" : ""})
+            </span>
           </h2>
           <table className="w-full text-sm border-collapse">
             <thead>
@@ -228,7 +264,7 @@ export default async function PartyPage({
               </tr>
             </thead>
             <tbody>
-              {byInd.slice(0, 20).map((r) => (
+              {visibleByInd.map((r) => (
                 <tr key={r.industry_label} className="border-b border-gray-100">
                   <td className="py-2 pr-4">{r.industry_label}</td>
                   <td className="py-2 text-right tabular-nums">
@@ -238,15 +274,31 @@ export default async function PartyPage({
               ))}
             </tbody>
           </table>
+          {sortedByInd.length > DEFAULT_LIMIT && (
+            <p className="mt-2 text-xs">
+              {indl === "all" ? (
+                <a href={buildUrl(cp, { indl: undefined })} className="text-blue-600 hover:underline">
+                  Show top {DEFAULT_LIMIT}
+                </a>
+              ) : (
+                <a href={buildUrl(cp, { indl: "all" })} className="text-blue-600 hover:underline">
+                  Show all {sortedByInd.length}
+                </a>
+              )}
+            </p>
+          )}
         </section>
       )}
 
       {/* Top donors */}
-      {topDonors.length > 0 && (
+      {sortedDonors.length > 0 && (
         <section>
           <h2 className="mb-3 font-semibold text-gray-900">
             Top donors{" "}
-            {(from || to) && <span className="font-normal text-gray-400 text-sm">(all time)</span>}
+            <span className="font-normal text-gray-400 text-sm">
+              ({visibleDonors.length} of {sortedDonors.length}
+              {(from || to) ? " — all time" : ""})
+            </span>
           </h2>
           <table className="w-full text-sm border-collapse">
             <thead>
@@ -257,7 +309,7 @@ export default async function PartyPage({
               </tr>
             </thead>
             <tbody>
-              {topDonors.map((r) => (
+              {visibleDonors.map((r) => (
                 <tr key={r.donor.id} className="border-b border-gray-100 hover:bg-gray-50">
                   <td className="py-2 pr-4">
                     <a href={`/donor/${r.donor.id}`} className="text-blue-600 hover:underline">
@@ -277,13 +329,31 @@ export default async function PartyPage({
               ))}
             </tbody>
           </table>
+          {sortedDonors.length > DEFAULT_LIMIT && (
+            <p className="mt-2 text-xs">
+              {donl === "all" ? (
+                <a href={buildUrl(cp, { donl: undefined })} className="text-blue-600 hover:underline">
+                  Show top {DEFAULT_LIMIT}
+                </a>
+              ) : (
+                <a href={buildUrl(cp, { donl: "all" })} className="text-blue-600 hover:underline">
+                  Show all {sortedDonors.length}
+                </a>
+              )}
+            </p>
+          )}
         </section>
       )}
 
       {/* Expenditure */}
-      {expRows.length > 0 && (
+      {sortedExp.length > 0 && (
         <section>
-          <h2 className="mb-3 font-semibold text-gray-900">Expenditure</h2>
+          <h2 className="mb-3 font-semibold text-gray-900">
+            Expenditure{" "}
+            <span className="font-normal text-gray-400 text-sm">
+              ({visibleExp.length} of {filteredExpenditure.length}{(from || to) ? ` filtered` : ""})
+            </span>
+          </h2>
           <table className="w-full text-sm border-collapse">
             <thead>
               <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
@@ -293,7 +363,7 @@ export default async function PartyPage({
               </tr>
             </thead>
             <tbody>
-              {expRows.map((r, i) => (
+              {visibleExp.map((r, i) => (
                 <tr key={i} className="border-b border-gray-100">
                   <td className="py-2 pr-4">{r.financial_year}</td>
                   <td className="py-2 pr-4 text-gray-600">{r.category}</td>
@@ -304,6 +374,19 @@ export default async function PartyPage({
               ))}
             </tbody>
           </table>
+          {filteredExpenditure.length > DEFAULT_LIMIT && (
+            <p className="mt-2 text-xs">
+              {expl === "all" ? (
+                <a href={buildUrl(cp, { expl: undefined })} className="text-blue-600 hover:underline">
+                  Show top {DEFAULT_LIMIT}
+                </a>
+              ) : (
+                <a href={buildUrl(cp, { expl: "all" })} className="text-blue-600 hover:underline">
+                  Show all {filteredExpenditure.length}
+                </a>
+              )}
+            </p>
+          )}
         </section>
       )}
     </div>
