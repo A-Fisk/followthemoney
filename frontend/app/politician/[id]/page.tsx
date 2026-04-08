@@ -173,12 +173,12 @@ export default async function PoliticianPage({
 }: {
   params: Promise<{ id: string }>;
   searchParams: Promise<{
-    sort?: string; parliament?: string;
+    sort?: string; parliament?: string; issue?: string; from?: string; to?: string;
     ptd?: string; int?: string; dd?: string; vpb?: string; dm?: string;
   }>;
 }) {
   const { id } = await params;
-  const { sort, parliament, ptd, int: intParam, dd, vpb, dm } = await searchParams;
+  const { sort, parliament, issue, from, to, ptd, int: intParam, dd, vpb, dm } = await searchParams;
 
   const voteSort:   VoteSort = sort === "vote" || sort === "issue" ? sort : "date";
   const ptdSort:    PtdSort  = ptd === "donor" || ptd === "industry" ? ptd : "total";
@@ -187,28 +187,80 @@ export default async function PoliticianPage({
   const vpbSort:    VpbSort  = vpb === "amount" || vpb === "donor" || vpb === "branch" ? vpb : "year";
   const dmSort:     DmSort   = dm === "amount" || dm === "donor" || dm === "recipient" ? dm : "year";
   const selectedParliament   = parliament ? Number(parliament) : null;
+  const selectedIssue        = issue ?? null;
 
-  const pol = await fetchPolitician(id);
+  const pol = await fetchPolitician(id, { from_year: from, to_year: to });
   if (!pol) notFound();
 
   const chamberLabel = pol.chamber === "house" ? "House of Representatives" : pol.chamber === "senate" ? "Senate" : null;
+
+  // Convert a date string to its financial year, e.g. "2019-09-15" → "2019-20"
+  function dateToFY(date: string): string {
+    const year = parseInt(date.slice(0, 4));
+    const month = parseInt(date.slice(5, 7));
+    const startYear = month >= 7 ? year : year - 1;
+    return `${startYear}-${String(startYear + 1).slice(2)}`;
+  }
+
+  // from/to are financial years e.g. "2019-20"; convert to ISO date boundaries
+  const fyStart = from ? `${from.split("-")[0]}-07-01` : null;
+  const fyEnd   = to   ? `${parseInt(to.split("-")[0]) + 1}-06-30` : null;
 
   const parliamentsWithVotes = [
     ...new Set(pol.votes.map((v) => voteParliament(v.vote_date)).filter((n): n is number => n !== null)),
   ].sort((a, b) => b - a);
 
-  const filteredVotes = selectedParliament
-    ? pol.votes.filter((v) => voteParliament(v.vote_date) === selectedParliament)
-    : pol.votes;
+  const filteredVotes = pol.votes
+    .filter((v) => !selectedParliament || voteParliament(v.vote_date) === selectedParliament)
+    .filter((v) => !selectedIssue || v.issue_tags?.includes(selectedIssue))
+    .filter((v) => !fyStart || (v.vote_date ?? "") >= fyStart)
+    .filter((v) => !fyEnd   || (v.vote_date ?? "") <= fyEnd);
+
+  const allIssueTags = [...new Set(
+    pol.votes.flatMap((v) => v.issue_tags ?? [])
+  )].sort();
 
   // All current params — passed to buildUrl so every sort link preserves the others
-  const cp = { sort, parliament, ptd, int: intParam, dd, vpb, dm };
+  const cp = { sort, parliament, issue, from, to, ptd, int: intParam, dd, vpb, dm };
+
+  // Current financial year always available in "to" dropdown
+  const now = new Date();
+  const fyStartYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  const currentFY = `${fyStartYear}-${String(fyStartYear + 1).slice(2)}`;
+
+  // Find the earliest FY across all data sources
+  const dataYears = [
+    ...pol.votes.map((v) => v.vote_date ? dateToFY(v.vote_date) : null),
+    ...pol.direct_donations.map((d) => d.financial_year),
+    ...pol.via_party_donations.map((d) => d.financial_year),
+    ...pol.as_donor_donations.map((d) => d.financial_year),
+    ...pol.interests.map((i) => i.date_declared ? dateToFY(i.date_declared) : null),
+  ].filter((y): y is string => !!y);
+
+  // Generate a continuous range from earliest year to current FY
+  const earliestFYStart = dataYears.length
+    ? Math.min(...dataYears.map((y) => parseInt(y.split("-")[0])))
+    : fyStartYear;
+  const allYears: string[] = [];
+  for (let y = earliestFYStart; y <= fyStartYear; y++) {
+    allYears.push(`${y}-${String(y + 1).slice(2)}`);
+  }
+
+  const filteredDirectDons    = pol.direct_donations.filter((d) =>
+    (!from || (d.financial_year ?? "") >= from) && (!to || (d.financial_year ?? "") <= to));
+  const filteredViaBranchDons = pol.via_party_donations.filter((d) =>
+    (!from || (d.financial_year ?? "") >= from) && (!to || (d.financial_year ?? "") <= to));
+  const filteredAsDonorDons   = pol.as_donor_donations.filter((d) =>
+    (!from || (d.financial_year ?? "") >= from) && (!to || (d.financial_year ?? "") <= to));
+  const filteredInterests     = pol.interests.filter((i) =>
+    (!fyStart || !i.date_declared || i.date_declared >= fyStart) &&
+    (!fyEnd   || !i.date_declared || i.date_declared <= fyEnd));
 
   const topDonors     = sortTopDonors(pol.party_top_donors, ptdSort);
-  const interests     = sortInterests(pol.interests, intSort);
-  const directDons    = sortDonations(pol.direct_donations, ddSort);
-  const viaBranchDons = sortViaBranch(pol.via_party_donations, vpbSort);
-  const asDonorDons   = sortAsDonor(pol.as_donor_donations, dmSort);
+  const interests     = sortInterests(filteredInterests, intSort);
+  const directDons    = sortDonations(filteredDirectDons, ddSort);
+  const viaBranchDons = sortViaBranch(filteredViaBranchDons, vpbSort);
+  const asDonorDons   = sortAsDonor(filteredAsDonorDons, dmSort);
   const sortedVotes   = sortVotes(filteredVotes, voteSort);
 
   return (
@@ -231,6 +283,37 @@ export default async function PoliticianPage({
         </div>
       </div>
 
+      {/* Year filter — applies to all sections */}
+      {allYears.length > 1 && (
+        <form method="GET" className="flex flex-wrap items-center gap-2 text-xs">
+          {Object.entries(cp).filter(([k, v]) => v && k !== "from" && k !== "to").map(([k, v]) => (
+            <input key={k} type="hidden" name={k} value={v} />
+          ))}
+          <span className="text-gray-400">Filter by year</span>
+          <select name="from" defaultValue={from ?? ""}
+            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+            <option value="">From</option>
+            {allYears.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <span className="text-gray-400">to</span>
+          <select name="to" defaultValue={to ?? ""}
+            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+            <option value="">To</option>
+            {[...allYears].reverse().map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button type="submit"
+            className="rounded px-2 py-1 bg-gray-800 text-white hover:bg-gray-700">
+            Apply
+          </button>
+          {(from || to) && (
+            <a href={buildUrl(cp, { from: undefined, to: undefined })}
+              className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
+              Clear
+            </a>
+          )}
+        </form>
+      )}
+
       {/* Party top donors */}
       {pol.party && topDonors.length > 0 && (
         <section>
@@ -240,7 +323,9 @@ export default async function PoliticianPage({
               <a href={`/party/${pol.party.id}`} className="text-blue-600 hover:underline">
                 {pol.party.abbreviation || pol.party.name}
               </a>{" "}
-              <span className="font-normal text-gray-400 text-sm">(top 10)</span>
+              <span className="font-normal text-gray-400 text-sm">
+                (top 10)
+              </span>
             </h2>
             <a href={`/party/${pol.party.id}`} className="text-xs text-blue-600 hover:underline">
               Full party profile →
@@ -281,7 +366,9 @@ export default async function PoliticianPage({
       <section>
         <h2 className="mb-3 font-semibold text-gray-900">
           Register of Interests — gifts & travel{" "}
-          <span className="font-normal text-gray-400 text-sm">({pol.interests.length})</span>
+          <span className="font-normal text-gray-400 text-sm">
+            ({filteredInterests.length}{(from || to) ? ` of ${pol.interests.length} filtered` : ""})
+          </span>
         </h2>
         {pol.interests.length === 0 ? (
           <p className="text-sm text-gray-400">No declared interests on record.</p>
@@ -337,7 +424,9 @@ export default async function PoliticianPage({
         <div className="mb-3 flex items-center justify-between">
           <h2 className="font-semibold text-gray-900">
             Direct donations received{" "}
-            <span className="font-normal text-gray-400 text-sm">({pol.direct_donations.length})</span>
+            <span className="font-normal text-gray-400 text-sm">
+              ({filteredDirectDons.length}{(from || to) ? ` of ${pol.direct_donations.length} filtered` : ""})
+            </span>
           </h2>
           {pol.direct_donations.length > 0 && (
             <a
@@ -398,7 +487,9 @@ export default async function PoliticianPage({
         <section>
           <h2 className="mb-3 font-semibold text-gray-900">
             Donations via named party branch{" "}
-            <span className="font-normal text-gray-400 text-sm">({pol.via_party_donations.length})</span>
+            <span className="font-normal text-gray-400 text-sm">
+              ({filteredViaBranchDons.length}{(from || to) ? ` of ${pol.via_party_donations.length} filtered` : ""})
+            </span>
           </h2>
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
@@ -447,7 +538,9 @@ export default async function PoliticianPage({
         <section>
           <h2 className="mb-3 font-semibold text-gray-900">
             Donations made{" "}
-            <span className="font-normal text-gray-400 text-sm">({pol.as_donor_donations.length})</span>
+            <span className="font-normal text-gray-400 text-sm">
+              ({filteredAsDonorDons.length}{(from || to) ? ` of ${pol.as_donor_donations.length} filtered` : ""})
+            </span>
           </h2>
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
@@ -499,12 +592,13 @@ export default async function PoliticianPage({
           <h2 className="font-semibold text-gray-900">
             Voting record{" "}
             <span className="font-normal text-gray-400 text-sm">
-              ({filteredVotes.length}{selectedParliament ? ` in ${selectedParliament}th Parliament` : ` of ${pol.votes.length}`})
+              ({filteredVotes.length}{(selectedParliament || selectedIssue || from || to) ? ` of ${pol.votes.length} filtered` : ""})
             </span>
           </h2>
         </div>
         {parliamentsWithVotes.length > 1 && (
           <div className="mb-3 flex flex-wrap gap-1 text-xs">
+            <span className="py-1 text-gray-400 mr-1">Parliament</span>
             <a
               href={buildUrl(cp, { parliament: undefined })}
               className={`rounded px-2 py-1 ${!selectedParliament ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
@@ -521,6 +615,29 @@ export default async function PoliticianPage({
               </a>
             ))}
           </div>
+        )}
+        {allIssueTags.length > 0 && (
+          <form method="GET" className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+            {Object.entries(cp).filter(([k, v]) => v && k !== "issue").map(([k, v]) => (
+              <input key={k} type="hidden" name={k} value={v} />
+            ))}
+            <span className="text-gray-400">Issue</span>
+            <select name="issue" defaultValue={selectedIssue ?? ""}
+              className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+              <option value="">All</option>
+              {allIssueTags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+            </select>
+            <button type="submit"
+              className="rounded px-2 py-1 bg-gray-800 text-white hover:bg-gray-700">
+              Apply
+            </button>
+            {selectedIssue && (
+              <a href={buildUrl(cp, { issue: undefined })}
+                className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
+                Clear
+              </a>
+            )}
+          </form>
         )}
         {pol.votes.length === 0 ? (
           <p className="text-sm text-gray-400">No voting record on file.</p>

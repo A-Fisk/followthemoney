@@ -88,10 +88,10 @@ export default async function PartyPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ yrs?: string; ind?: string; don?: string; exp?: string }>;
+  searchParams: Promise<{ yrs?: string; ind?: string; don?: string; exp?: string; from?: string; to?: string }>;
 }) {
   const { id } = await params;
-  const { yrs, ind, don, exp } = await searchParams;
+  const { yrs, ind, don, exp, from, to } = await searchParams;
 
   const yrSort:  YrSort  = yrs === "total"    ? "total"    : "year";
   const indSort: IndSort = ind === "industry" ? "industry" : "total";
@@ -101,12 +101,31 @@ export default async function PartyPage({
   const party = await fetchParty(id);
   if (!party) notFound();
 
-  const cp = { yrs, ind, don, exp }; // current params for URL building
+  const cp = { yrs, ind, don, exp, from, to }; // current params for URL building
 
-  const byYear    = sortByYear(party.donations_by_year, yrSort);
+  // Current financial year always available in "to" dropdown
+  const now = new Date();
+  const fyStartYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  const currentFY = `${fyStartYear}-${String(fyStartYear + 1).slice(2)}`;
+
+  const allFinancialYears = [...new Set(
+    [...party.donations_by_year.map((r) => r.financial_year), currentFY]
+  )].sort();
+
+  const filteredByYear = party.donations_by_year
+    .filter((r) => !from || r.financial_year >= from)
+    .filter((r) => !to   || r.financial_year <= to);
+
+  const filteredExpenditure = party.expenditure
+    .filter((r) => !from || r.financial_year >= from)
+    .filter((r) => !to   || r.financial_year <= to);
+
+  const filteredTotal = filteredByYear.reduce((sum, r) => sum + r.total, 0);
+
+  const byYear    = sortByYear(filteredByYear, yrSort);
   const byInd     = sortByInd(party.industry_breakdown, indSort);
   const topDonors = sortTopDonors(party.top_donors, donSort);
-  const expRows   = sortExpenditure(party.expenditure, expSort);
+  const expRows   = sortExpenditure(filteredExpenditure, expSort);
 
   return (
     <div className="space-y-8">
@@ -122,7 +141,13 @@ export default async function PartyPage({
         </h1>
         <p className="mt-1 text-lg font-semibold text-gray-700">
           Total donations:{" "}
-          ${party.total_donations.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
+          ${((from || to) ? filteredTotal : party.total_donations)
+            .toLocaleString("en-AU", { maximumFractionDigits: 0 })}
+          {(from || to) && (
+            <span className="ml-2 text-sm font-normal text-gray-400">
+              (${party.total_donations.toLocaleString("en-AU", { maximumFractionDigits: 0 })} all time)
+            </span>
+          )}
         </p>
         <a
           href={`http://localhost:8000/api/v1/parties/${id}?format=csv`}
@@ -131,6 +156,37 @@ export default async function PartyPage({
           Download donations by year (CSV)
         </a>
       </div>
+
+      {/* Year filter */}
+      {allFinancialYears.length > 1 && (
+        <form method="GET" className="flex flex-wrap items-center gap-2 text-xs">
+          {Object.entries(cp).filter(([k, v]) => v && k !== "from" && k !== "to").map(([k, v]) => (
+            <input key={k} type="hidden" name={k} value={v} />
+          ))}
+          <span className="text-gray-400">Filter by year</span>
+          <select name="from" defaultValue={from ?? ""}
+            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+            <option value="">From</option>
+            {allFinancialYears.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <span className="text-gray-400">to</span>
+          <select name="to" defaultValue={to ?? ""}
+            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+            <option value="">To</option>
+            {[...allFinancialYears].reverse().map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button type="submit"
+            className="rounded px-2 py-1 bg-gray-800 text-white hover:bg-gray-700">
+            Apply
+          </button>
+          {(from || to) && (
+            <a href={buildUrl(cp, { from: undefined, to: undefined })}
+              className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
+              Clear
+            </a>
+          )}
+        </form>
+      )}
 
       {/* Donations by year */}
       {byYear.length > 0 && (
@@ -160,7 +216,10 @@ export default async function PartyPage({
       {/* Industry breakdown */}
       {byInd.length > 0 && (
         <section>
-          <h2 className="mb-3 font-semibold text-gray-900">Donations by industry</h2>
+          <h2 className="mb-3 font-semibold text-gray-900">
+            Donations by industry{" "}
+            {(from || to) && <span className="font-normal text-gray-400 text-sm">(all time)</span>}
+          </h2>
           <table className="w-full text-sm border-collapse">
             <thead>
               <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
@@ -185,7 +244,10 @@ export default async function PartyPage({
       {/* Top donors */}
       {topDonors.length > 0 && (
         <section>
-          <h2 className="mb-3 font-semibold text-gray-900">Top donors</h2>
+          <h2 className="mb-3 font-semibold text-gray-900">
+            Top donors{" "}
+            {(from || to) && <span className="font-normal text-gray-400 text-sm">(all time)</span>}
+          </h2>
           <table className="w-full text-sm border-collapse">
             <thead>
               <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">

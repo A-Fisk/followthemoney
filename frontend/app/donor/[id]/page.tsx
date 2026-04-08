@@ -85,10 +85,10 @@ export default async function DonorPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ sort?: string; psort?: string; gsort?: string }>;
+  searchParams: Promise<{ sort?: string; psort?: string; gsort?: string; from?: string; to?: string }>;
 }) {
   const { id } = await params;
-  const { sort, psort, gsort } = await searchParams;
+  const { sort, psort, gsort, from, to } = await searchParams;
 
   const donationSort: DonationSort =
     sort === "recipient" || sort === "year" || sort === "type" ? sort : "amount";
@@ -99,11 +99,46 @@ export default async function DonorPage({
   const donor = await fetchDonor(id);
   if (!donor) notFound();
 
-  const cp = { sort, psort, gsort }; // current params
+  const cp = { sort, psort, gsort, from, to }; // current params
 
-  const sortedDonations = sortDonations(donor.donations, donationSort);
-  const sortedByParty   = sortByParty(donor.donations_by_party, partySort);
-  const sortedGifts     = sortGifts(donor.interests, giftSort);
+  // Current financial year (July–June), e.g. "2025-26"
+  const now = new Date();
+  const fyStartYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  const currentFY = `${fyStartYear}-${String(fyStartYear + 1).slice(2)}`;
+
+  const allFinancialYears = [...new Set(
+    [...donor.donations.map((d) => d.financial_year).filter((y): y is string => !!y), currentFY]
+  )].sort();
+
+  // Convert financial year "YYYY-YY" to start/end ISO dates for gifts filtering
+  const fyStart = from ? `${from.split("-")[0]}-07-01` : null;
+  const fyEnd   = to   ? `${parseInt(to.split("-")[0]) + 1}-06-30` : null;
+
+  const filteredDonations = donor.donations
+    .filter((d) => !from || !d.financial_year || d.financial_year >= from)
+    .filter((d) => !to   || !d.financial_year || d.financial_year <= to);
+
+  // Re-aggregate donations by party from filtered set
+  const byPartyMap = new Map<number, PartyTotalRow>();
+  for (const d of filteredDonations) {
+    if (!d.party) continue;
+    const entry = byPartyMap.get(d.party.id) ?? { party: d.party, total: 0 };
+    entry.total += d.amount;
+    byPartyMap.set(d.party.id, entry);
+  }
+  const filteredByParty = (from || to)
+    ? [...byPartyMap.values()]
+    : donor.donations_by_party;
+
+  const filteredGifts = donor.interests
+    .filter((g) => !fyStart || !g.date_declared || g.date_declared >= fyStart)
+    .filter((g) => !fyEnd   || !g.date_declared || g.date_declared <= fyEnd);
+
+  const filteredTotalDonated = filteredDonations.reduce((sum, d) => sum + d.amount, 0);
+
+  const sortedDonations = sortDonations(filteredDonations, donationSort);
+  const sortedByParty   = sortByParty(filteredByParty, partySort);
+  const sortedGifts     = sortGifts(filteredGifts, giftSort);
 
   return (
     <div className="space-y-8">
@@ -154,8 +189,14 @@ export default async function DonorPage({
             <p className="text-lg font-semibold">
               Total donated:{" "}
               <span className="text-gray-700">
-                ${donor.total_donated.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
+                ${((from || to) ? filteredTotalDonated : donor.total_donated)
+                  .toLocaleString("en-AU", { maximumFractionDigits: 0 })}
               </span>
+              {(from || to) && (
+                <span className="ml-2 text-sm font-normal text-gray-400">
+                  (${donor.total_donated.toLocaleString("en-AU", { maximumFractionDigits: 0 })} all time)
+                </span>
+              )}
             </p>
           )}
           {donor.total_gifted > 0 && (
@@ -170,12 +211,45 @@ export default async function DonorPage({
         </div>
       </div>
 
+      {/* Year filter */}
+      {allFinancialYears.length > 1 && (
+        <form method="GET" className="flex flex-wrap items-center gap-2 text-xs">
+          {Object.entries(cp).filter(([k, v]) => v && k !== "from" && k !== "to").map(([k, v]) => (
+            <input key={k} type="hidden" name={k} value={v} />
+          ))}
+          <span className="text-gray-400">Filter by year</span>
+          <select name="from" defaultValue={from ?? ""}
+            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+            <option value="">From</option>
+            {allFinancialYears.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <span className="text-gray-400">to</span>
+          <select name="to" defaultValue={to ?? ""}
+            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+            <option value="">To</option>
+            {[...allFinancialYears].reverse().map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button type="submit"
+            className="rounded px-2 py-1 bg-gray-800 text-white hover:bg-gray-700">
+            Apply
+          </button>
+          {(from || to) && (
+            <a href={buildUrl(cp, { from: undefined, to: undefined })}
+              className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
+              Clear
+            </a>
+          )}
+        </form>
+      )}
+
       {/* Gifts & travel — Register of Interests */}
       {sortedGifts.length > 0 && (
         <section>
           <h2 className="mb-3 font-semibold text-gray-900">
             Gifts & travel declared{" "}
-            <span className="font-normal text-gray-400 text-sm">({sortedGifts.length})</span>
+            <span className="font-normal text-gray-400 text-sm">
+              ({sortedGifts.length}{(from || to) ? ` of ${donor.interests.length} filtered` : ""})
+            </span>
           </h2>
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
@@ -224,7 +298,14 @@ export default async function DonorPage({
       {/* By party */}
       {sortedByParty.length > 0 && (
         <section>
-          <h2 className="mb-3 font-semibold text-gray-900">Donations by party</h2>
+          <h2 className="mb-3 font-semibold text-gray-900">
+            Donations by party{" "}
+            {(from || to) && (
+              <span className="font-normal text-gray-400 text-sm">
+                ({sortedByParty.length} of {donor.donations_by_party.length} filtered)
+              </span>
+            )}
+          </h2>
           <table className="w-full text-sm border-collapse">
             <thead>
               <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
@@ -259,7 +340,9 @@ export default async function DonorPage({
           <div className="mb-3 flex items-center justify-between">
             <h2 className="font-semibold text-gray-900">
               All donations{" "}
-              <span className="text-gray-400 font-normal text-sm">({donor.donations.length})</span>
+              <span className="text-gray-400 font-normal text-sm">
+                ({filteredDonations.length}{(from || to) ? ` of ${donor.donations.length} filtered` : ""})
+              </span>
             </h2>
             <a
               href={`http://localhost:8000/api/v1/donors/${id}?format=csv`}
