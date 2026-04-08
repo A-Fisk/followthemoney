@@ -174,12 +174,11 @@ export default async function PoliticianPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{
     sort?: string; parliament?: string; issue?: string; from?: string; to?: string;
-    dfrom?: string; dto?: string;
     ptd?: string; int?: string; dd?: string; vpb?: string; dm?: string;
   }>;
 }) {
   const { id } = await params;
-  const { sort, parliament, issue, from, to, dfrom, dto, ptd, int: intParam, dd, vpb, dm } = await searchParams;
+  const { sort, parliament, issue, from, to, ptd, int: intParam, dd, vpb, dm } = await searchParams;
 
   const voteSort:   VoteSort = sort === "vote" || sort === "issue" ? sort : "date";
   const ptdSort:    PtdSort  = ptd === "donor" || ptd === "industry" ? ptd : "total";
@@ -189,39 +188,11 @@ export default async function PoliticianPage({
   const dmSort:     DmSort   = dm === "amount" || dm === "donor" || dm === "recipient" ? dm : "year";
   const selectedParliament   = parliament ? Number(parliament) : null;
   const selectedIssue        = issue ?? null;
-  const selectedFrom         = from ?? null;
-  const selectedTo           = to ?? null;
 
-  const pol = await fetchPolitician(id);
+  const pol = await fetchPolitician(id, { from_year: from, to_year: to });
   if (!pol) notFound();
 
   const chamberLabel = pol.chamber === "house" ? "House of Representatives" : pol.chamber === "senate" ? "Senate" : null;
-
-  const parliamentsWithVotes = [
-    ...new Set(pol.votes.map((v) => voteParliament(v.vote_date)).filter((n): n is number => n !== null)),
-  ].sort((a, b) => b - a);
-
-  const filteredVotes = pol.votes
-    .filter((v) => !selectedParliament || voteParliament(v.vote_date) === selectedParliament)
-    .filter((v) => !selectedIssue || v.issue_tags?.includes(selectedIssue))
-    .filter((v) => !selectedFrom || (v.vote_date ?? "") >= `${selectedFrom}-01-01`)
-    .filter((v) => !selectedTo   || (v.vote_date ?? "") <= `${selectedTo}-12-31`);
-
-  const allIssueTags = [...new Set(
-    pol.votes.flatMap((v) => v.issue_tags ?? [])
-  )].sort();
-
-  const allVoteYears = [...new Set(
-    pol.votes.map((v) => v.vote_date?.slice(0, 4)).filter((y): y is string => !!y)
-  )].sort();
-
-  // All current params — passed to buildUrl so every sort link preserves the others
-  const cp = { sort, parliament, issue, from, to, dfrom, dto, ptd, int: intParam, dd, vpb, dm };
-
-  // Donation financial year filter
-  const now = new Date();
-  const fyStartYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
-  const currentFY = `${fyStartYear}-${String(fyStartYear + 1).slice(2)}`;
 
   // Convert a date string to its financial year, e.g. "2019-09-15" → "2019-20"
   function dateToFY(date: string): string {
@@ -231,23 +202,56 @@ export default async function PoliticianPage({
     return `${startYear}-${String(startYear + 1).slice(2)}`;
   }
 
-  const allDonationYears = [...new Set([
+  // from/to are financial years e.g. "2019-20"; convert to ISO date boundaries
+  const fyStart = from ? `${from.split("-")[0]}-07-01` : null;
+  const fyEnd   = to   ? `${parseInt(to.split("-")[0]) + 1}-06-30` : null;
+
+  const parliamentsWithVotes = [
+    ...new Set(pol.votes.map((v) => voteParliament(v.vote_date)).filter((n): n is number => n !== null)),
+  ].sort((a, b) => b - a);
+
+  const filteredVotes = pol.votes
+    .filter((v) => !selectedParliament || voteParliament(v.vote_date) === selectedParliament)
+    .filter((v) => !selectedIssue || v.issue_tags?.includes(selectedIssue))
+    .filter((v) => !fyStart || (v.vote_date ?? "") >= fyStart)
+    .filter((v) => !fyEnd   || (v.vote_date ?? "") <= fyEnd);
+
+  const allIssueTags = [...new Set(
+    pol.votes.flatMap((v) => v.issue_tags ?? [])
+  )].sort();
+
+  // All current params — passed to buildUrl so every sort link preserves the others
+  const cp = { sort, parliament, issue, from, to, ptd, int: intParam, dd, vpb, dm };
+
+  // Current financial year always available in "to" dropdown
+  const now = new Date();
+  const fyStartYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  const currentFY = `${fyStartYear}-${String(fyStartYear + 1).slice(2)}`;
+
+  // Find the earliest FY across all data sources
+  const dataYears = [
+    ...pol.votes.map((v) => v.vote_date ? dateToFY(v.vote_date) : null),
     ...pol.direct_donations.map((d) => d.financial_year),
     ...pol.via_party_donations.map((d) => d.financial_year),
     ...pol.as_donor_donations.map((d) => d.financial_year),
     ...pol.interests.map((i) => i.date_declared ? dateToFY(i.date_declared) : null),
-    currentFY,
-  ].filter((y): y is string => !!y))].sort();
+  ].filter((y): y is string => !!y);
 
-  const fyStart = dfrom ? `${dfrom.split("-")[0]}-07-01` : null;
-  const fyEnd   = dto   ? `${parseInt(dto.split("-")[0]) + 1}-06-30` : null;
+  // Generate a continuous range from earliest year to current FY
+  const earliestFYStart = dataYears.length
+    ? Math.min(...dataYears.map((y) => parseInt(y.split("-")[0])))
+    : fyStartYear;
+  const allYears: string[] = [];
+  for (let y = earliestFYStart; y <= fyStartYear; y++) {
+    allYears.push(`${y}-${String(y + 1).slice(2)}`);
+  }
 
   const filteredDirectDons    = pol.direct_donations.filter((d) =>
-    (!dfrom || (d.financial_year ?? "") >= dfrom) && (!dto || (d.financial_year ?? "") <= dto));
+    (!from || (d.financial_year ?? "") >= from) && (!to || (d.financial_year ?? "") <= to));
   const filteredViaBranchDons = pol.via_party_donations.filter((d) =>
-    (!dfrom || (d.financial_year ?? "") >= dfrom) && (!dto || (d.financial_year ?? "") <= dto));
+    (!from || (d.financial_year ?? "") >= from) && (!to || (d.financial_year ?? "") <= to));
   const filteredAsDonorDons   = pol.as_donor_donations.filter((d) =>
-    (!dfrom || (d.financial_year ?? "") >= dfrom) && (!dto || (d.financial_year ?? "") <= dto));
+    (!from || (d.financial_year ?? "") >= from) && (!to || (d.financial_year ?? "") <= to));
   const filteredInterests     = pol.interests.filter((i) =>
     (!fyStart || !i.date_declared || i.date_declared >= fyStart) &&
     (!fyEnd   || !i.date_declared || i.date_declared <= fyEnd));
@@ -279,30 +283,30 @@ export default async function PoliticianPage({
         </div>
       </div>
 
-      {/* Donation year filter */}
-      {allDonationYears.length > 1 && (
+      {/* Year filter — applies to all sections */}
+      {allYears.length > 1 && (
         <form method="GET" className="flex flex-wrap items-center gap-2 text-xs">
-          {Object.entries(cp).filter(([k, v]) => v && k !== "dfrom" && k !== "dto").map(([k, v]) => (
+          {Object.entries(cp).filter(([k, v]) => v && k !== "from" && k !== "to").map(([k, v]) => (
             <input key={k} type="hidden" name={k} value={v} />
           ))}
-          <span className="text-gray-400">Filter donations by year</span>
-          <select name="dfrom" defaultValue={dfrom ?? ""}
+          <span className="text-gray-400">Filter by year</span>
+          <select name="from" defaultValue={from ?? ""}
             className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
             <option value="">From</option>
-            {allDonationYears.map((y) => <option key={y} value={y}>{y}</option>)}
+            {allYears.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
           <span className="text-gray-400">to</span>
-          <select name="dto" defaultValue={dto ?? ""}
+          <select name="to" defaultValue={to ?? ""}
             className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
             <option value="">To</option>
-            {[...allDonationYears].reverse().map((y) => <option key={y} value={y}>{y}</option>)}
+            {[...allYears].reverse().map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
           <button type="submit"
             className="rounded px-2 py-1 bg-gray-800 text-white hover:bg-gray-700">
             Apply
           </button>
-          {(dfrom || dto) && (
-            <a href={buildUrl(cp, { dfrom: undefined, dto: undefined })}
+          {(from || to) && (
+            <a href={buildUrl(cp, { from: undefined, to: undefined })}
               className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
               Clear
             </a>
@@ -320,7 +324,7 @@ export default async function PoliticianPage({
                 {pol.party.abbreviation || pol.party.name}
               </a>{" "}
               <span className="font-normal text-gray-400 text-sm">
-                (top 10{(dfrom || dto) ? ", all time" : ""})
+                (top 10)
               </span>
             </h2>
             <a href={`/party/${pol.party.id}`} className="text-xs text-blue-600 hover:underline">
@@ -363,7 +367,7 @@ export default async function PoliticianPage({
         <h2 className="mb-3 font-semibold text-gray-900">
           Register of Interests — gifts & travel{" "}
           <span className="font-normal text-gray-400 text-sm">
-            ({filteredInterests.length}{(dfrom || dto) ? ` of ${pol.interests.length} filtered` : ""})
+            ({filteredInterests.length}{(from || to) ? ` of ${pol.interests.length} filtered` : ""})
           </span>
         </h2>
         {pol.interests.length === 0 ? (
@@ -421,7 +425,7 @@ export default async function PoliticianPage({
           <h2 className="font-semibold text-gray-900">
             Direct donations received{" "}
             <span className="font-normal text-gray-400 text-sm">
-              ({filteredDirectDons.length}{(dfrom || dto) ? ` of ${pol.direct_donations.length} filtered` : ""})
+              ({filteredDirectDons.length}{(from || to) ? ` of ${pol.direct_donations.length} filtered` : ""})
             </span>
           </h2>
           {pol.direct_donations.length > 0 && (
@@ -484,7 +488,7 @@ export default async function PoliticianPage({
           <h2 className="mb-3 font-semibold text-gray-900">
             Donations via named party branch{" "}
             <span className="font-normal text-gray-400 text-sm">
-              ({filteredViaBranchDons.length}{(dfrom || dto) ? ` of ${pol.via_party_donations.length} filtered` : ""})
+              ({filteredViaBranchDons.length}{(from || to) ? ` of ${pol.via_party_donations.length} filtered` : ""})
             </span>
           </h2>
           <div className="overflow-x-auto">
@@ -535,7 +539,7 @@ export default async function PoliticianPage({
           <h2 className="mb-3 font-semibold text-gray-900">
             Donations made{" "}
             <span className="font-normal text-gray-400 text-sm">
-              ({filteredAsDonorDons.length}{(dfrom || dto) ? ` of ${pol.as_donor_donations.length} filtered` : ""})
+              ({filteredAsDonorDons.length}{(from || to) ? ` of ${pol.as_donor_donations.length} filtered` : ""})
             </span>
           </h2>
           <div className="overflow-x-auto">
@@ -588,7 +592,7 @@ export default async function PoliticianPage({
           <h2 className="font-semibold text-gray-900">
             Voting record{" "}
             <span className="font-normal text-gray-400 text-sm">
-              ({filteredVotes.length}{(selectedParliament || selectedIssue || selectedFrom || selectedTo) ? ` of ${pol.votes.length} filtered` : ""})
+              ({filteredVotes.length}{(selectedParliament || selectedIssue || from || to) ? ` of ${pol.votes.length} filtered` : ""})
             </span>
           </h2>
         </div>
@@ -629,36 +633,6 @@ export default async function PoliticianPage({
             </button>
             {selectedIssue && (
               <a href={buildUrl(cp, { issue: undefined })}
-                className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
-                Clear
-              </a>
-            )}
-          </form>
-        )}
-        {allVoteYears.length > 1 && (
-          <form method="GET" className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-            {/* Preserve all other params as hidden inputs */}
-            {Object.entries(cp).filter(([k, v]) => v && k !== "from" && k !== "to").map(([k, v]) => (
-              <input key={k} type="hidden" name={k} value={v} />
-            ))}
-            <span className="text-gray-400">Date</span>
-            <select name="from" defaultValue={selectedFrom ?? ""}
-              className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
-              <option value="">From</option>
-              {allVoteYears.map((y) => <option key={y} value={y}>{y}</option>)}
-            </select>
-            <span className="text-gray-400">to</span>
-            <select name="to" defaultValue={selectedTo ?? ""}
-              className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
-              <option value="">To</option>
-              {[...allVoteYears].reverse().map((y) => <option key={y} value={y}>{y}</option>)}
-            </select>
-            <button type="submit"
-              className="rounded px-2 py-1 bg-gray-800 text-white hover:bg-gray-700">
-              Apply
-            </button>
-            {(selectedFrom || selectedTo) && (
-              <a href={buildUrl(cp, { from: undefined, to: undefined })}
                 className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
                 Clear
               </a>

@@ -182,8 +182,13 @@ export interface UnresolvedDonor {
 
 // ── Fetch functions ────────────────────────────────────────────────────────────
 
-export const fetchPolitician = (id: string) =>
-  apiFetch<PoliticianDetail>(`/api/v1/politicians/${id}`);
+export const fetchPolitician = (id: string, params?: { from_year?: string; to_year?: string }) => {
+  const qs = new URLSearchParams();
+  if (params?.from_year) qs.set("from_year", params.from_year);
+  if (params?.to_year)   qs.set("to_year",   params.to_year);
+  const q = qs.toString();
+  return apiFetch<PoliticianDetail>(`/api/v1/politicians/${id}${q ? `?${q}` : ""}`);
+};
 
 export const fetchParty = (id: string) =>
   apiFetch<PartyDetail>(`/api/v1/parties/${id}`);

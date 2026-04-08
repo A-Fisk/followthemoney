@@ -54,7 +54,13 @@ def list_politicians(
 
 
 @router.get("/{id}", response_model=schemas.PoliticianDetail)
-def get_politician(id: int, format: str | None = None, db: Session = Depends(get_db)):
+def get_politician(
+    id: int,
+    format: str | None = None,
+    from_year: str | None = None,
+    to_year: str | None = None,
+    db: Session = Depends(get_db),
+):
     # Base info
     pol = db.execute(
         text("""
@@ -70,7 +76,7 @@ def get_politician(id: int, format: str | None = None, db: Session = Depends(get
     if not pol:
         raise HTTPException(status_code=404, detail="Politician not found")
 
-    # Top 10 donors to the politician's party
+    # Top 10 donors to the politician's party (optionally filtered by financial year range)
     party_top_donors_rows = db.execute(
         text("""
             SELECT dn.id, dn.name, dn.industry_label, dn.needs_review,
@@ -78,11 +84,13 @@ def get_politician(id: int, format: str | None = None, db: Session = Depends(get
             FROM donations d
             JOIN donors dn ON dn.id = d.donor_id
             WHERE d.recipient_party_id = :party_id
+              AND (:from_year IS NULL OR d.financial_year >= :from_year)
+              AND (:to_year   IS NULL OR d.financial_year <= :to_year)
             GROUP BY dn.id, dn.name, dn.industry_label, dn.needs_review
             ORDER BY total DESC
             LIMIT 10
         """),
-        {"party_id": pol["party_id"]},
+        {"party_id": pol["party_id"], "from_year": from_year, "to_year": to_year},
     ).mappings().all() if pol["party_id"] else []
 
     # Direct donations received
