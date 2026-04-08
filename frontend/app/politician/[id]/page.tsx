@@ -223,10 +223,19 @@ export default async function PoliticianPage({
   const fyStartYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
   const currentFY = `${fyStartYear}-${String(fyStartYear + 1).slice(2)}`;
 
+  // Convert a date string to its financial year, e.g. "2019-09-15" → "2019-20"
+  function dateToFY(date: string): string {
+    const year = parseInt(date.slice(0, 4));
+    const month = parseInt(date.slice(5, 7));
+    const startYear = month >= 7 ? year : year - 1;
+    return `${startYear}-${String(startYear + 1).slice(2)}`;
+  }
+
   const allDonationYears = [...new Set([
     ...pol.direct_donations.map((d) => d.financial_year),
     ...pol.via_party_donations.map((d) => d.financial_year),
     ...pol.as_donor_donations.map((d) => d.financial_year),
+    ...pol.interests.map((i) => i.date_declared ? dateToFY(i.date_declared) : null),
     currentFY,
   ].filter((y): y is string => !!y))].sort();
 
