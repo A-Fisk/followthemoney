@@ -1,11 +1,11 @@
 """
-Merge last-name-only politician stubs (from House PDF parser) with
-full-name records (from TVFY/Senate API).
+Merge duplicate politician records across three passes:
 
-The House register PDF parser creates politicians using the slug from the
-APH URL, which is usually just a last name (e.g. "Albanese"). TVFY creates
-full-name records ("Anthony Albanese"). This script finds matches and
-reassigns interests, votes, and donations to the canonical full-name record.
+  Pass 1 — last-name-only stubs (from House PDF parser) matched to
+            full-name records (from TVFY/Senate API).
+  Pass 2 — "Last, First Middle" comma-format stubs matched to full-name records.
+  Pass 3 — full-name records whose given names are nickname variants of each other
+            (e.g. "Jim Chalmers" ↔ "James Chalmers", "Bob Katter" ↔ "Robert Katter").
 
 Safe to re-run — skips already-merged records.
 
@@ -28,6 +28,92 @@ DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql://ftm:ftm@localhost:5432/followthemoney",
 )
+
+
+# Mapping from formal given name → list of common nicknames/diminutives.
+# Keys are title-cased; lookup should be case-insensitive.
+NICKNAME_MAP: dict[str, list[str]] = {
+    "James":     ["Jim", "Jimmy"],
+    "Robert":    ["Bob", "Rob", "Bobby", "Robbie"],
+    "William":   ["Bill", "Will", "Billy", "Liam"],
+    "Richard":   ["Dick", "Rich", "Rick", "Ricky"],
+    "John":      ["Jack", "Johnny"],
+    "Michael":   ["Mike", "Mick", "Mickey"],
+    "Thomas":    ["Tom", "Tommy"],
+    "David":     ["Dave", "Davey"],
+    "Andrew":    ["Andy", "Drew"],
+    "Anthony":   ["Tony"],
+    "Edward":    ["Ed", "Eddie", "Ted", "Ned"],
+    "Stephen":   ["Steve", "Stevie", "Steven"],
+    "Matthew":   ["Matt", "Matty"],
+    "Nicholas":  ["Nick", "Nicky"],
+    "Patrick":   ["Pat", "Paddy"],
+    "Peter":     ["Pete"],
+    "Joseph":    ["Joe", "Joey"],
+    "Christopher": ["Chris"],
+    "Alexander": ["Alex", "Alec"],
+    "Daniel":    ["Dan", "Danny"],
+    "Benjamin":  ["Ben", "Benny"],
+    "Timothy":   ["Tim", "Timmy"],
+    "Jonathan":  ["Jon", "Jonny"],
+    "Gregory":   ["Greg"],
+    "Geoffrey":  ["Geoff"],
+    "Jeffrey":   ["Jeff"],
+    "Lawrence":  ["Larry", "Laurie"],
+    "Frederick": ["Fred", "Freddy"],
+    "Charles":   ["Charlie", "Chuck"],
+    "Gerald":    ["Gerry", "Jerry"],
+    "Samuel":    ["Sam", "Sammy"],
+    "Kenneth":   ["Ken", "Kenny"],
+    "Donald":    ["Don", "Donnie"],
+    "Ronald":    ["Ron", "Ronnie"],
+    "Raymond":   ["Ray"],
+    "Leonard":   ["Len", "Lenny"],
+    "Bernard":   ["Bernie"],
+    "Albert":    ["Al", "Bert", "Albie"],
+    "Francis":   ["Frank", "Fran"],
+    "Margaret":  ["Maggie", "Marg", "Meg", "Peggy"],
+    "Elizabeth":  ["Liz", "Beth", "Bess", "Eliza", "Lisa"],
+    "Katherine": ["Kate", "Kath", "Kat", "Kathy", "Catherine", "Cath", "Cat", "Cathy"],
+    "Patricia":  ["Patty", "Tricia"],
+    "Jacqueline": ["Jackie", "Jacqui"],
+    "Christine": ["Chrissy"],
+    "Deborah":   ["Deb", "Debbie"],
+    "Susan":     ["Sue", "Susie"],
+    "Barbara":   ["Barb", "Babs"],
+    "Dorothy":   ["Dot", "Dottie"],
+    "Joanne":    ["Jo", "Joan"],
+    "Josephine": ["Josie"],
+    "Annette":   ["Anne", "Annie"],
+}
+
+# Build a reverse map: nickname → canonical formal name
+_NICKNAME_TO_FORMAL: dict[str, str] = {}
+for _formal, _nicks in NICKNAME_MAP.items():
+    for _nick in _nicks:
+        _NICKNAME_TO_FORMAL[_nick.lower()] = _formal
+
+
+def normalise_first_name(given: str) -> str:
+    """
+    Return the canonical formal name for a given name, or the name itself
+    if no mapping exists.  Case-insensitive lookup.
+
+    Examples:
+        "Jim"   → "James"
+        "Bob"   → "Robert"
+        "James" → "James"   (already formal)
+        "Tony"  → "Anthony"
+    """
+    given_lower = given.strip().lower()
+    # Check if it's a known formal name (return title-cased)
+    for formal in NICKNAME_MAP:
+        if given_lower == formal.lower():
+            return formal
+    # Check reverse (nickname → formal)
+    if given_lower in _NICKNAME_TO_FORMAL:
+        return _NICKNAME_TO_FORMAL[given_lower]
+    return given.strip()
 
 
 def normalise_slug(slug: str) -> tuple[str, str | None]:
@@ -215,6 +301,62 @@ def main():
                 merged += 1
             else:
                 no_match.append(stub_name)
+
+        # ── Pass 3: merge full-name records that are nickname variants ────────
+        # Find all remaining full-name politicians grouped by last name.
+        # For each group, check if any two members share a last name and have
+        # first names that are nickname variants of each other.
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT p.id, p.name,
+                    (SELECT COUNT(*) FROM interests WHERE politician_id = p.id) AS interests,
+                    (SELECT COUNT(*) FROM votes WHERE politician_id = p.id) AS votes,
+                    (SELECT COUNT(*) FROM donations WHERE recipient_politician_id = p.id) AS donations
+                FROM politicians p
+                WHERE p.name LIKE '% %'
+                  AND p.name NOT LIKE '%%,%%'
+                ORDER BY p.name
+            """)
+            full_name_rows = cur.fetchall()
+
+        # Group by normalised last name
+        by_last: dict[str, list[tuple]] = {}
+        for row in full_name_rows:
+            pid, pname, interests, votes, donations = row
+            parts = pname.strip().split()
+            last = parts[-1].lower()
+            by_last.setdefault(last, []).append(row)
+
+        for last_name, group in by_last.items():
+            if len(group) < 2:
+                continue
+            # Compare every pair in the group
+            for i in range(len(group)):
+                for j in range(i + 1, len(group)):
+                    id_a, name_a, int_a, vot_a, don_a = group[i]
+                    id_b, name_b, int_b, vot_b, don_b = group[j]
+                    first_a = name_a.strip().split()[0]
+                    first_b = name_b.strip().split()[0]
+                    # Skip if first names are already identical
+                    if first_a.lower() == first_b.lower():
+                        continue
+                    # Check if they resolve to the same canonical name
+                    if normalise_first_name(first_a) == normalise_first_name(first_b):
+                        # Prefer the record with more associated data as the target.
+                        # If equal, prefer whichever name is the formal/canonical one.
+                        score_a = int_a + vot_a + don_a
+                        score_b = int_b + vot_b + don_b
+                        formal_a = normalise_first_name(first_a) == first_a
+                        formal_b = normalise_first_name(first_b) == first_b
+                        if score_a > score_b or (score_a == score_b and formal_a and not formal_b):
+                            source_id, source_name, s_int, s_vot, s_don = id_b, name_b, int_b, vot_b, don_b
+                            target_id, target_name = id_a, name_a
+                        else:
+                            source_id, source_name, s_int, s_vot, s_don = id_a, name_a, int_a, vot_a, don_a
+                            target_id, target_name = id_b, name_b
+                        merge_records(conn, source_id, target_id, source_name, target_name,
+                                      s_int, s_vot, s_don, args.dry_run)
+                        merged += 1
 
         print(f"\n{'='*60}")
         print(f"Merged/cleaned: {merged}")
