@@ -85,10 +85,10 @@ export default async function DonorPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ sort?: string; psort?: string; gsort?: string }>;
+  searchParams: Promise<{ sort?: string; psort?: string; gsort?: string; from?: string; to?: string }>;
 }) {
   const { id } = await params;
-  const { sort, psort, gsort } = await searchParams;
+  const { sort, psort, gsort, from, to } = await searchParams;
 
   const donationSort: DonationSort =
     sort === "recipient" || sort === "year" || sort === "type" ? sort : "amount";
@@ -99,9 +99,17 @@ export default async function DonorPage({
   const donor = await fetchDonor(id);
   if (!donor) notFound();
 
-  const cp = { sort, psort, gsort }; // current params
+  const cp = { sort, psort, gsort, from, to }; // current params
 
-  const sortedDonations = sortDonations(donor.donations, donationSort);
+  const allFinancialYears = [...new Set(
+    donor.donations.map((d) => d.financial_year).filter((y): y is string => !!y)
+  )].sort();
+
+  const filteredDonations = donor.donations
+    .filter((d) => !from || !d.financial_year || d.financial_year >= from)
+    .filter((d) => !to   || !d.financial_year || d.financial_year <= to);
+
+  const sortedDonations = sortDonations(filteredDonations, donationSort);
   const sortedByParty   = sortByParty(donor.donations_by_party, partySort);
   const sortedGifts     = sortGifts(donor.interests, giftSort);
 
@@ -259,7 +267,9 @@ export default async function DonorPage({
           <div className="mb-3 flex items-center justify-between">
             <h2 className="font-semibold text-gray-900">
               All donations{" "}
-              <span className="text-gray-400 font-normal text-sm">({donor.donations.length})</span>
+              <span className="text-gray-400 font-normal text-sm">
+                ({filteredDonations.length}{(from || to) ? ` of ${donor.donations.length} filtered` : ""})
+              </span>
             </h2>
             <a
               href={`http://localhost:8000/api/v1/donors/${id}?format=csv`}
@@ -268,6 +278,35 @@ export default async function DonorPage({
               Download CSV
             </a>
           </div>
+          {allFinancialYears.length > 1 && (
+            <form method="GET" className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+              {Object.entries(cp).filter(([k, v]) => v && k !== "from" && k !== "to").map(([k, v]) => (
+                <input key={k} type="hidden" name={k} value={v} />
+              ))}
+              <span className="text-gray-400">Year</span>
+              <select name="from" defaultValue={from ?? ""}
+                className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+                <option value="">From</option>
+                {allFinancialYears.map((y) => <option key={y} value={y}>{y}</option>)}
+              </select>
+              <span className="text-gray-400">to</span>
+              <select name="to" defaultValue={to ?? ""}
+                className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 bg-white">
+                <option value="">To</option>
+                {[...allFinancialYears].reverse().map((y) => <option key={y} value={y}>{y}</option>)}
+              </select>
+              <button type="submit"
+                className="rounded px-2 py-1 bg-gray-800 text-white hover:bg-gray-700">
+                Apply
+              </button>
+              {(from || to) && (
+                <a href={buildUrl(cp, { from: undefined, to: undefined })}
+                  className="rounded px-2 py-1 bg-gray-100 text-gray-600 hover:bg-gray-200">
+                  Clear
+                </a>
+              )}
+            </form>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
