@@ -121,6 +121,14 @@ export interface PartyTotalRow {
   total: number;
 }
 
+export interface PartyFinancialsRow {
+  financial_year: string;
+  total_receipts: number | null;
+  total_payments: number | null;
+  total_debts: number | null;
+  total_discretionary_benefits: number | null;
+}
+
 export interface PartyDetail {
   id: number;
   name: string;
@@ -130,6 +138,7 @@ export interface PartyDetail {
   industry_breakdown: { industry_label: string; total: number }[];
   donations_by_year: { financial_year: string; total: number }[];
   expenditure: { financial_year: string; category: string; amount: number }[];
+  financials: PartyFinancialsRow[];
 }
 
 export interface DonorInterestRow {

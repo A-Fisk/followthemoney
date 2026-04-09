@@ -17,7 +17,7 @@ Annual:
   Donations Made.csv                 → donations (donor perspective, with dates)
   Donor Donations Received.csv       → donations (registered donor entities)
   Detailed Discretionary Benefits.csv → expenditure (discretionary_benefits)
-  Party Returns.csv                  → expenditure (operational totals)
+  Party Returns.csv                  → expenditure (operational totals) + party_financials
   Senate Groups and Candidate Donations (annual) — not in bulk; covered by election files
 
 Election:
@@ -275,7 +275,10 @@ def load_party_returns(cur, data_dir: Path) -> int:
     """
     Columns: Financial Year, Name, Party Group, Total Receipts, Total Payments,
              Total Debts, Total Discretionary Benefits
-    Loads Total Payments → expenditure (operational).
+
+    Loads:
+      - Total Payments → expenditure (operational)
+      - All four aggregate columns → party_financials (upserted per party/year)
     """
     path = data_dir / "annual" / "Party Returns.csv"
     count = 0
@@ -286,11 +289,35 @@ def load_party_returns(cur, data_dir: Path) -> int:
             total_payments = parse_amount(row.get("Total Payments", ""))
             if not name or total_payments is None:
                 continue
+            total_receipts = parse_amount(row.get("Total Receipts", ""))
+            total_debts    = parse_amount(row.get("Total Debts",    ""))
+            total_disc     = parse_amount(row.get("Total Discretionary Benefits", ""))
+
             party_id = upsert_party(cur, name)
+
+            # Expenditure (operational total) — existing behaviour
             cur.execute(
                 "INSERT INTO expenditure (party_id, financial_year, category, amount, source_url) "
                 "VALUES (%s, %s, %s, %s, %s)",
                 (party_id, fy, "operational", total_payments, AEC_SOURCE_URL),
+            )
+
+            # Financial summary — all four Party Returns columns
+            cur.execute(
+                """
+                INSERT INTO party_financials
+                    (party_id, financial_year, total_receipts, total_payments,
+                     total_debts, total_discretionary_benefits, source_url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (party_id, financial_year) DO UPDATE SET
+                    total_receipts               = EXCLUDED.total_receipts,
+                    total_payments               = EXCLUDED.total_payments,
+                    total_debts                  = EXCLUDED.total_debts,
+                    total_discretionary_benefits = EXCLUDED.total_discretionary_benefits,
+                    source_url                   = EXCLUDED.source_url
+                """,
+                (party_id, fy, total_receipts, total_payments,
+                 total_debts, total_disc, AEC_SOURCE_URL),
             )
             count += 1
     return count
@@ -480,7 +507,7 @@ def main():
             with conn.cursor() as cur:
                 if not args.no_clear:
                     print("Clearing existing data ...")
-                    cur.execute("TRUNCATE donations, expenditure, donors, politicians RESTART IDENTITY CASCADE")
+                    cur.execute("TRUNCATE donations, expenditure, party_financials, donors, politicians RESTART IDENTITY CASCADE")
                     # Re-seed the party abbreviations we cleared
                     cur.execute("""
                         INSERT INTO parties (name, abbreviation) VALUES

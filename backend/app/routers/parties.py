@@ -114,12 +114,27 @@ def get_party(id: int, format: str | None = None, db: Session = Depends(get_db))
         {"id": id},
     ).mappings().all()
 
+    # Financial summary (Total Receipts / Payments / Debts from Party Returns)
+    financials = db.execute(
+        text("""
+            SELECT financial_year, total_receipts, total_payments,
+                   total_debts, total_discretionary_benefits
+            FROM party_financials
+            WHERE party_id = :id
+            ORDER BY financial_year DESC
+        """),
+        {"id": id},
+    ).mappings().all()
+
     if format == "csv":
         rows = [
             {"financial_year": r["financial_year"], "total": float(r["total"])}
             for r in by_year
         ]
         return csv_response(rows, filename=f"party_{id}_donations_by_year")
+
+    def _opt_float(val) -> float | None:
+        return float(val) if val is not None else None
 
     return schemas.PartyDetail(
         id=party["id"],
@@ -147,5 +162,15 @@ def get_party(id: int, format: str | None = None, db: Session = Depends(get_db))
             schemas.ExpenditureRow(financial_year=r["financial_year"],
                                    category=r["category"], amount=float(r["amount"]))
             for r in expenditure
+        ],
+        financials=[
+            schemas.PartyFinancialsRow(
+                financial_year=r["financial_year"],
+                total_receipts=_opt_float(r["total_receipts"]),
+                total_payments=_opt_float(r["total_payments"]),
+                total_debts=_opt_float(r["total_debts"]),
+                total_discretionary_benefits=_opt_float(r["total_discretionary_benefits"]),
+            )
+            for r in financials
         ],
     )

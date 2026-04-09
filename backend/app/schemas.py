@@ -133,6 +133,14 @@ class ExpenditureRow(BaseModel):
     amount: float
 
 
+class PartyFinancialsRow(BaseModel):
+    financial_year: str
+    total_receipts: float | None = None
+    total_payments: float | None = None
+    total_debts: float | None = None
+    total_discretionary_benefits: float | None = None
+
+
 # ── Detail responses ───────────────────────────────────────────────────────────
 
 class PartyBranchDonation(DonationRow):
@@ -180,6 +188,7 @@ class PartyDetail(BaseModel):
     industry_breakdown: list[IndustryRow] = []
     donations_by_year: list[YearRow] = []
     expenditure: list[ExpenditureRow] = []
+    financials: list[PartyFinancialsRow] = []
 
 
 class DonorInterestRow(BaseModel):

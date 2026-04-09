@@ -109,6 +109,22 @@ CREATE TABLE IF NOT EXISTS votes (
     UNIQUE (politician_id, bill_id)
 );
 
+-- Party financial summary from AEC Party Returns (Total Receipts, Payments, Debts)
+CREATE TABLE IF NOT EXISTS party_financials (
+    id                           SERIAL PRIMARY KEY,
+    party_id                     INTEGER NOT NULL REFERENCES parties(id),
+    financial_year               TEXT NOT NULL,
+    total_receipts               NUMERIC(14, 2),
+    total_payments               NUMERIC(14, 2),
+    total_debts                  NUMERIC(14, 2),
+    total_discretionary_benefits NUMERIC(14, 2),
+    source_url                   TEXT,
+    UNIQUE (party_id, financial_year)
+);
+
+CREATE INDEX ON party_financials (party_id);
+CREATE INDEX ON party_financials (financial_year);
+
 -- Donor-industry-to-bill relevance (Phase 3 — seeded manually)
 CREATE TABLE IF NOT EXISTS bill_industry_relevance (
     bill_id        INTEGER REFERENCES bills(id),

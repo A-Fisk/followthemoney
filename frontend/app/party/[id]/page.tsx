@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { fetchParty, PartyDetail, TopDonorRow } from "../../lib/api";
+import { fetchParty, PartyDetail, PartyFinancialsRow, TopDonorRow } from "../../lib/api";
 
 // ── Sort types ──────────────────────────────────────────────────────────────
 
@@ -299,6 +299,54 @@ export default async function PartyPage({
                   <td className="py-2 pr-4 text-gray-600">{r.category}</td>
                   <td className="py-2 text-right tabular-nums">
                     ${r.amount.toLocaleString("en-AU", { maximumFractionDigits: 0 })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      {/* Financial summary (Party Returns totals) */}
+      {party.financials.length > 0 && (
+        <section>
+          <h2 className="mb-1 font-semibold text-gray-900">Financial summary</h2>
+          <p className="mb-3 text-xs text-gray-400">
+            Annual totals from AEC Party Returns — income, expenditure and outstanding debts.
+          </p>
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide">
+                <th className="py-2 pr-4">Year</th>
+                <th className="py-2 pr-4 text-right">Total receipts</th>
+                <th className="py-2 pr-4 text-right">Total payments</th>
+                <th className="py-2 pr-4 text-right">Discretionary benefits</th>
+                <th className="py-2 text-right">Total debts</th>
+              </tr>
+            </thead>
+            <tbody>
+              {party.financials.map((r) => (
+                <tr key={r.financial_year} className="border-b border-gray-100">
+                  <td className="py-2 pr-4">{r.financial_year}</td>
+                  <td className="py-2 pr-4 text-right tabular-nums">
+                    {r.total_receipts != null
+                      ? `$${r.total_receipts.toLocaleString("en-AU", { maximumFractionDigits: 0 })}`
+                      : "—"}
+                  </td>
+                  <td className="py-2 pr-4 text-right tabular-nums">
+                    {r.total_payments != null
+                      ? `$${r.total_payments.toLocaleString("en-AU", { maximumFractionDigits: 0 })}`
+                      : "—"}
+                  </td>
+                  <td className="py-2 pr-4 text-right tabular-nums">
+                    {r.total_discretionary_benefits != null
+                      ? `$${r.total_discretionary_benefits.toLocaleString("en-AU", { maximumFractionDigits: 0 })}`
+                      : "—"}
+                  </td>
+                  <td className="py-2 text-right tabular-nums">
+                    {r.total_debts != null
+                      ? `$${r.total_debts.toLocaleString("en-AU", { maximumFractionDigits: 0 })}`
+                      : "—"}
                   </td>
                 </tr>
               ))}
